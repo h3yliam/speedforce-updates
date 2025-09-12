@@ -8,6 +8,7 @@ function App() {
   const [selectedUser, setSelectedUser] = useState('');
   const [title, setTitle] = useState('');
   const [html, setHtml] = useState('');
+  const [status, setStatus] = useState('New');
   const [view, setView] = useState('threads');
 
   useEffect(() => {
@@ -62,7 +63,7 @@ function App() {
     setSelectedUser(initials);
   }
 
-  function addEntry(parentId = null, entryHtml = html, entryTitle = title) {
+  function addEntry(parentId = null, entryHtml = html, entryTitle = title, entryStatus = status) {
     if (!selectedUser || !entryHtml.trim()) return;
     const newEntry = {
       id: Date.now().toString(),
@@ -70,8 +71,10 @@ function App() {
       initials: selectedUser,
       title: entryTitle || '(untitled)',
       html: entryHtml,
+      status: entryStatus,
       createdAt: new Date().toISOString(),
       editedAt: null,
+      editedBy: null,
       children: [],
     };
     setEntries((prev) => {
@@ -89,6 +92,7 @@ function App() {
     });
     setHtml('');
     setTitle('');
+    setStatus('New');
   }
 
   function updateEntry(id, fields) {
@@ -96,7 +100,7 @@ function App() {
       const update = (list) =>
         list.map((item) => {
           if (item.id === id) {
-            return { ...item, ...fields, editedAt: new Date().toISOString() };
+            return { ...item, ...fields, editedAt: new Date().toISOString(), editedBy: selectedUser };
           }
           return { ...item, children: update(item.children) };
         });
@@ -104,18 +108,22 @@ function App() {
     });
   }
 
-  function getLatest(entry) {
+  function getLastInfo(entry) {
     let latest = entry.editedAt || entry.createdAt;
+    let lastBy = entry.editedAt ? (entry.editedBy || entry.initials) : entry.initials;
     entry.children.forEach((child) => {
-      const childLatest = getLatest(child);
-      if (childLatest > latest) latest = childLatest;
+      const info = getLastInfo(child);
+      if (info.latest > latest) {
+        latest = info.latest;
+        lastBy = info.lastBy;
+      }
     });
-    return latest;
+    return { latest, lastBy };
   }
 
   const sortedEntries = [...entries].sort((a, b) => {
-    const al = getLatest(a);
-    const bl = getLatest(b);
+    const al = getLastInfo(a).latest;
+    const bl = getLastInfo(b).latest;
     return bl.localeCompare(al);
   });
 
@@ -123,28 +131,36 @@ function App() {
     const [editing, setEditing] = useState(false);
     const [editTitle, setEditTitle] = useState(entry.title);
     const [editHtml, setEditHtml] = useState(entry.html);
+    const [editStatus, setEditStatus] = useState(entry.status);
     const [replying, setReplying] = useState(false);
     const [replyHtml, setReplyHtml] = useState('');
 
     function handleEditSave() {
-      updateEntry(entry.id, { title: editTitle, html: editHtml });
+      updateEntry(entry.id, { title: editTitle, html: editHtml, status: editStatus });
       setEditing(false);
     }
 
     function handleReplySave() {
-      addEntry(entry.id, replyHtml, entry.title);
+      addEntry(entry.id, replyHtml, entry.title, entry.status);
       setReplying(false);
       setReplyHtml('');
     }
 
     return (
       <div style={{ border: '1px solid #ddd', padding: '8px', marginTop: '8px', marginLeft: depth ? depth * 20 + 'px' : '0' }}>
-        <div style={{ fontWeight: 'bold' }}>{entry.title}</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontWeight: 'bold' }}>{entry.title}</div>
+          <div>
+            <span style={{ borderRadius: '4px', padding: '2px 6px', border: '1px solid #ccc', marginLeft: '8px', fontSize: '0.75em' }}>{entry.status}</span>
+          </div>
+        </div>
         <div style={{ fontSize: '0.8em', color: '#666' }}>
           {entry.initials} - {new Date(entry.createdAt).toLocaleString()}
         </div>
         {entry.editedAt && (
-          <div style={{ fontSize: '0.7em', color: '#666' }}>edited {new Date(entry.editedAt).toLocaleString()}</div>
+          <div style={{ fontSize: '0.7em', color: '#666' }}>
+            edited {new Date(entry.editedAt).toLocaleString()} by {entry.editedBy || entry.initials}
+          </div>
         )}
         {!editing ? (
           <div dangerouslySetInnerHTML={{ __html: entry.html }} />
@@ -156,6 +172,13 @@ function App() {
               placeholder="Title"
               style={{ width: '100%', marginBottom: '4px' }}
             />
+            <select value={editStatus} onChange={(e) => setEditStatus(e.target.value)} style={{ marginBottom: '4px' }}>
+              {['New', 'In Progress', 'Complete', 'Cancelled'].map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt}
+                </option>
+              ))}
+            </select>
             <textarea
               value={editHtml}
               onChange={(e) => setEditHtml(e.target.value)}
@@ -227,6 +250,13 @@ function App() {
           onChange={(e) => setTitle(e.target.value)}
           style={{ width: '100%', marginTop: '8px' }}
         />
+        <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ marginTop: '4px' }}>
+          {['New', 'In Progress', 'Complete', 'Cancelled'].map((opt) => (
+            <option key={opt} value={opt}>
+              {opt}
+            </option>
+          ))}
+        </select>
         <textarea
           value={html}
           onChange={(e) => setHtml(e.target.value)}
@@ -252,9 +282,23 @@ function App() {
         </div>
       ) : (
         <div>
-          {sortedEntries.map((entry) => (
-            <Entry key={entry.id} entry={entry} />
-          ))}
+          {/* Summary list for all updates */}
+          {sortedEntries.map((entry) => {
+            const info = getLastInfo(entry);
+            return (
+              <div key={entry.id} style={{ border: '1px solid #ddd', padding: '8px', marginTop: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ fontWeight: 'bold' }}>{entry.title}</span>
+                  <span style={{ borderRadius: '4px', padding: '2px 6px', border: '1px solid #ccc', fontSize: '0.75em' }}>
+                    {entry.status}
+                  </span>
+                </div>
+                <div style={{ fontSize: '0.8em', color: '#666' }}>
+                  Latest: {new Date(info.latest).toLocaleString()} by {info.lastBy}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
