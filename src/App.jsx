@@ -6,7 +6,9 @@ function App() {
   const [entries, setEntries] = useState([]);
   const [users, setUsers] = useState([]);
   const [selectedUser, setSelectedUser] = useState('');
-  const [title, setTitle] = useState('');
+  // Category selector (RFQ, PO, ETA, CLAIM) and description for each update
+  const [category, setCategory] = useState('RFQ');
+  const [description, setDescription] = useState('');
   const [html, setHtml] = useState('');
   const [status, setStatus] = useState('New');
   const [view, setView] = useState('threads');
@@ -38,16 +40,27 @@ function App() {
       .map((row) => {
         const cols = row.split('\t');
         const cells = cols
-          .map((col) => '<td>' + escapeHtml(col) + '</td>')
+          .map((col) =>
+            `<td style="border: 1px solid #ccc; padding: 4px;">${escapeHtml(col)}</td>`
+          )
           .join('');
         return '<tr>' + cells + '</tr>';
       })
       .join('');
-    return '<table>' + tableRows + '</table>';
+    // Add basic styling to mimic spreadsheet cell borders
+    return `<table style="border-collapse: collapse;">${tableRows}</table>`;
   }
 
   const handlePaste = (e) => {
     const clipboardData = e.clipboardData;
+    // If the clipboard contains HTML table markup, prefer that to preserve formatting
+    const htmlData = clipboardData.getData('text/html');
+    if (htmlData && htmlData.includes('<table')) {
+      e.preventDefault();
+      setHtml((prev) => prev + htmlData);
+      return;
+    }
+    // Otherwise, if tab-separated plain text exists, convert it to a table
     const plain = clipboardData.getData('text/plain');
     if (plain && /\t/.test(plain)) {
       e.preventDefault();
@@ -63,13 +76,20 @@ function App() {
     setSelectedUser(initials);
   }
 
-  function addEntry(parentId = null, entryHtml = html, entryTitle = title, entryStatus = status) {
+  function addEntry(
+    parentId = null,
+    entryHtml = html,
+    entryCategory = category,
+    entryDescription = description,
+    entryStatus = status
+  ) {
     if (!selectedUser || !entryHtml.trim()) return;
     const newEntry = {
       id: Date.now().toString(),
       parentId,
       initials: selectedUser,
-      title: entryTitle || '(untitled)',
+      category: entryCategory,
+      description: entryDescription,
       html: entryHtml,
       status: entryStatus,
       createdAt: new Date().toISOString(),
@@ -91,7 +111,9 @@ function App() {
       return addToParent(prev);
     });
     setHtml('');
-    setTitle('');
+    // Reset category and description after saving
+    setCategory('RFQ');
+    setDescription('');
     setStatus('New');
   }
 
@@ -129,19 +151,21 @@ function App() {
 
   function Entry({ entry, depth = 0 }) {
     const [editing, setEditing] = useState(false);
-    const [editTitle, setEditTitle] = useState(entry.title);
+    // Title editing is removed; entries have immutable category/description
     const [editHtml, setEditHtml] = useState(entry.html);
     const [editStatus, setEditStatus] = useState(entry.status);
     const [replying, setReplying] = useState(false);
     const [replyHtml, setReplyHtml] = useState('');
 
     function handleEditSave() {
-      updateEntry(entry.id, { title: editTitle, html: editHtml, status: editStatus });
+      // Only update the HTML and status. Category/description remain unchanged.
+      updateEntry(entry.id, { html: editHtml, status: editStatus });
       setEditing(false);
     }
 
     function handleReplySave() {
-      addEntry(entry.id, replyHtml, entry.title, entry.status);
+      // Replies inherit the category, description and status of the parent entry
+      addEntry(entry.id, replyHtml, entry.category, entry.description, entry.status);
       setReplying(false);
       setReplyHtml('');
     }
@@ -149,7 +173,10 @@ function App() {
     return (
       <div style={{ border: '1px solid #ddd', padding: '8px', marginTop: '8px', marginLeft: depth ? depth * 20 + 'px' : '0' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ fontWeight: 'bold' }}>{entry.title}</div>
+          <div style={{ fontWeight: 'bold' }}>
+            {entry.category}
+            {entry.description ? ' - ' + entry.description : ''}
+          </div>
           <div>
             <span style={{ borderRadius: '4px', padding: '2px 6px', border: '1px solid #ccc', marginLeft: '8px', fontSize: '0.75em' }}>{entry.status}</span>
           </div>
@@ -166,12 +193,11 @@ function App() {
           <div dangerouslySetInnerHTML={{ __html: entry.html }} />
         ) : (
           <div>
-            <input
-              value={editTitle}
-              onChange={(e) => setEditTitle(e.target.value)}
-              placeholder="Title"
-              style={{ width: '100%', marginBottom: '4px' }}
-            />
+            {/* Display category and description read-only while editing */}
+            <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>
+              {entry.category}
+              {entry.description ? ' - ' + entry.description : ''}
+            </div>
             <select value={editStatus} onChange={(e) => setEditStatus(e.target.value)} style={{ marginBottom: '4px' }}>
               {['New', 'In Progress', 'Complete', 'Cancelled'].map((opt) => (
                 <option key={opt} value={opt}>
@@ -244,11 +270,22 @@ function App() {
             Add User
           </button>
         </div>
+        {/* Category dropdown and description replace the old title field */}
+        <div style={{ marginTop: '8px' }}>
+          <label style={{ marginRight: '4px' }}>Category:</label>
+          <select value={category} onChange={(e) => setCategory(e.target.value)}>
+            {['RFQ', 'PO', 'ETA', 'CLAIM'].map((opt) => (
+              <option key={opt} value={opt}>
+                {opt}
+              </option>
+            ))}
+          </select>
+        </div>
         <input
-          placeholder="Title"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          style={{ width: '100%', marginTop: '8px' }}
+          placeholder="Description"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          style={{ width: '100%', marginTop: '4px' }}
         />
         <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ marginTop: '4px' }}>
           {['New', 'In Progress', 'Complete', 'Cancelled'].map((opt) => (
@@ -288,7 +325,10 @@ function App() {
             return (
               <div key={entry.id} style={{ border: '1px solid #ddd', padding: '8px', marginTop: '8px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ fontWeight: 'bold' }}>{entry.title}</span>
+                  <span style={{ fontWeight: 'bold' }}>
+                    {entry.category}
+                    {entry.description ? ' - ' + entry.description : ''}
+                  </span>
                   <span style={{ borderRadius: '4px', padding: '2px 6px', border: '1px solid #ccc', fontSize: '0.75em' }}>
                     {entry.status}
                   </span>
