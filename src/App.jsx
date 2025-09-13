@@ -49,6 +49,31 @@ function App() {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
+  // Given a set of initials, return the full user name if available, otherwise fallback to initials. This
+  // helper makes it easy to display a meaningful name in the overview table when listing the
+  // last update author. If the user isn't found in the users array, we simply return the initials.
+  function getUserName(initials) {
+    const user = users.find((u) => u.initials === initials);
+    return user ? user.name || user.initials : initials;
+  }
+
+  // Define a simple palette for category and status tags. These colours are used to render
+  // coloured badges in the overview table at the top of the page. Feel free to adjust these
+  // values to suit your preferred palette.
+  const categoryColors = {
+    RFQ: '#007bff', // blue
+    PO: '#28a745', // green
+    ETA: '#ffc107', // yellow
+    CLAIM: '#17a2b8', // teal
+  };
+
+  const statusColors = {
+    New: '#6c757d', // grey
+    'In Progress': '#007bff', // blue
+    Complete: '#28a745', // green
+    Cancelled: '#dc3545', // red
+  };
+
   // Convert tab-separated text into an HTML table
   function tsvToHtml(text) {
     if (!/\t/.test(text)) {
@@ -531,20 +556,23 @@ function App() {
               overflow: 'hidden',
             }}
           >
+            {/* Overview header: define four columns to match the summary table design */}
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: '3fr 1fr 2fr',
+                gridTemplateColumns: '3fr 1fr 1fr 2fr',
                 fontWeight: 'bold',
                 backgroundColor: '#f4f4f4',
                 borderBottom: '1px solid #ddd',
                 padding: '8px 4px',
               }}
             >
-              <div>Title</div>
+              <div>Item</div>
               <div>Status</div>
+              <div>Updated by</div>
               <div>Last update</div>
             </div>
+            {/* Iterate through each top-level thread to build a clickable summary row */}
             {sortedEntries.map((entry) => {
               const details = getLastDetails(entry);
               const entryUser = getUserName(details.lastBy);
@@ -554,7 +582,7 @@ function App() {
                   onClick={() => goToThread(entry.id)}
                   style={{
                     display: 'grid',
-                    gridTemplateColumns: '3fr 1fr 2fr',
+                    gridTemplateColumns: '3fr 1fr 1fr 2fr',
                     padding: '6px 4px',
                     alignItems: 'center',
                     cursor: 'pointer',
@@ -562,6 +590,7 @@ function App() {
                     fontSize: '0.9em',
                   }}
                 >
+                  {/* Title column shows the category tag and description */}
                   <div>
                     <span
                       style={{
@@ -577,6 +606,7 @@ function App() {
                     </span>
                     {entry.description ? entry.description : '(untitled)'}
                   </div>
+                  {/* Status column shows a coloured badge representing the current status */}
                   <div>
                     <span
                       style={{
@@ -590,8 +620,11 @@ function App() {
                       {entry.status}
                     </span>
                   </div>
+                  {/* Updated by column displays the full name (or initials) of the last updater */}
+                  <div style={{ fontSize: '0.8em', color: '#555' }}>{entryUser}</div>
+                  {/* Last update column shows the timestamp of the latest update */}
                   <div style={{ fontSize: '0.8em', color: '#555' }}>
-                    {new Date(details.latestTime).toLocaleString()} by {entryUser}
+                    {new Date(details.latestTime).toLocaleString()}
                   </div>
                 </div>
               );
