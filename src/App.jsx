@@ -55,29 +55,33 @@ function App() {
 
   const handlePaste = (e) => {
     const clipboardData = e.clipboardData;
-    // If the clipboard contains HTML table markup (e.g. copied from Excel), extract and clean it
+    // Grab HTML and plain text from the clipboard. Excel and Google Sheets often put rich
+    // HTML with <html>, <head>, and <body> tags on the clipboard.
     const htmlData = clipboardData.getData('text/html');
-    if (htmlData && htmlData.toLowerCase().includes('<table')) {
+    // If HTML contains a table, parse and sanitize it
+    if (htmlData && /<table/i.test(htmlData)) {
       e.preventDefault();
-      // Extract the first <table>...</table> segment
-      const match = htmlData.match(/<table[\s\S]*?<\/table>/i);
-      let tableHtml = match ? match[0] : htmlData;
-      // Remove <col> tags which aren't needed for display
+      let tableHtml;
+      try {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(htmlData, 'text/html');
+        const table = doc.querySelector('table');
+        tableHtml = table ? table.outerHTML : null;
+      } catch (_) {
+        tableHtml = null;
+      }
+      if (!tableHtml) {
+        const match = htmlData.match(/<table[\s\S]*?<\/table>/i);
+        tableHtml = match ? match[0] : htmlData;
+      }
       tableHtml = tableHtml.replace(/<col[^>]*>/gi, '');
-      // Remove styles or classes on <tr> tags
       tableHtml = tableHtml.replace(/<tr[^>]*>/gi, '<tr>');
-      // Replace opening <table> tag with a styled version for borders
       tableHtml = tableHtml.replace(/<table[^>]*>/i, '<table style="border-collapse: collapse;">');
-      // Replace any <td ...> with a styled <td> to show cell borders and padding
       tableHtml = tableHtml.replace(/<td[^>]*>/gi, '<td style="border: 1px solid #ccc; padding: 4px;">');
-      // Insert the sanitized table into the editable div at the cursor position
       if (messageRef.current) {
-        // Use execCommand to insert HTML at the caret
         document.execCommand('insertHTML', false, tableHtml);
-        // Update html state from the editable div
         setHtml(messageRef.current.innerHTML);
       } else {
-        // Fallback: append to html state
         setHtml((prev) => prev + tableHtml);
       }
       return;
@@ -187,6 +191,54 @@ function App() {
     const [editStatus, setEditStatus] = useState(entry.status);
     const [replying, setReplying] = useState(false);
     const [replyHtml, setReplyHtml] = useState('');
+    // Refs for edit and reply inputs to support contentEditable with paste handling
+    const editRef = useRef(null);
+    const replyRef = useRef(null);
+    // Generic paste handler for edit and reply inputs. It sanitizes HTML tables
+    // copied from Excel and inserts them with visible borders, or converts
+    // TSV data into an HTML table.
+    const handleGenericPaste = (e, ref, setValue) => {
+      const clipboardData = e.clipboardData;
+      const htmlData = clipboardData.getData('text/html');
+      if (htmlData && /<table/i.test(htmlData)) {
+        e.preventDefault();
+        let tableHtml;
+        try {
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(htmlData, 'text/html');
+          const table = doc.querySelector('table');
+          tableHtml = table ? table.outerHTML : null;
+        } catch (_) {
+          tableHtml = null;
+        }
+        if (!tableHtml) {
+          const match = htmlData.match(/<table[\s\S]*?<\/table>/i);
+          tableHtml = match ? match[0] : htmlData;
+        }
+        tableHtml = tableHtml.replace(/<col[^>]*>/gi, '');
+        tableHtml = tableHtml.replace(/<tr[^>]*>/gi, '<tr>');
+        tableHtml = tableHtml.replace(/<table[^>]*>/i, '<table style="border-collapse: collapse;">');
+        tableHtml = tableHtml.replace(/<td[^>]*>/gi, '<td style="border: 1px solid #ccc; padding: 4px;">');
+        if (ref.current) {
+          document.execCommand('insertHTML', false, tableHtml);
+          setValue(ref.current.innerHTML);
+        } else {
+          setValue((prev) => prev + tableHtml);
+        }
+        return;
+      }
+      const plain = clipboardData.getData('text/plain');
+      if (plain && /\t/.test(plain)) {
+        e.preventDefault();
+        const tableHtml = tsvToHtml(plain);
+        if (ref.current) {
+          document.execCommand('insertHTML', false, tableHtml);
+          setValue(ref.current.innerHTML);
+        } else {
+          setValue((prev) => prev + tableHtml);
+        }
+      }
+    };
 
     function handleEditSave() {
       // Only update the HTML and status. Category/description remain unchanged.
@@ -236,11 +288,25 @@ function App() {
                 </option>
               ))}
             </select>
-            <textarea
-              value={editHtml}
-              onChange={(e) => setEditHtml(e.target.value)}
-              style={{ width: '100%', height: '80px' }}
-            />
+            <div
+              ref={editRef}
+              contentEditable
+              onPaste={(e) => handleGenericPaste(e, editRef, setEditHtml)}
+              onInput={() => {
+                if (editRef.current) {
+                  setEditHtml(editRef.current.innerHTML);
+                }
+              }}
+              dangerouslySetInnerHTML={{ __html: editHtml }}
+              style={{
+                width: '100%',
+                height: '80px',
+                padding: '4px',
+                border: '1px solid #ccc',
+                overflowY: 'auto',
+                whiteSpace: 'pre-wrap',
+              }}
+            ></div>
           </div>
         )}
         <div style={{ marginTop: '4px' }}>
@@ -255,11 +321,24 @@ function App() {
             </button>
           ) : (
             <span style={{ display: 'block', marginTop: '4px' }}>
-              <textarea
-                value={replyHtml}
-                onChange={(e) => setReplyHtml(e.target.value)}
-                style={{ width: '100%', height: '60px' }}
-              />
+              <div
+                ref={replyRef}
+                contentEditable
+                onPaste={(e) => handleGenericPaste(e, replyRef, setReplyHtml)}
+                onInput={() => {
+                  if (replyRef.current) {
+                    setReplyHtml(replyRef.current.innerHTML);
+                  }
+                }}
+                style={{
+                  width: '100%',
+                  height: '60px',
+                  padding: '4px',
+                  border: '1px solid #ccc',
+                  overflowY: 'auto',
+                  whiteSpace: 'pre-wrap',
+                }}
+              ></div>
               <button onClick={handleReplySave}>Save Reply</button>
             </span>
           )}
