@@ -1,61 +1,134 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createClient } from '@supabase/supabase-js';
 
-// Local storage key for persisting entries and users across sessions
-const STORAGE_KEY = 'speedforce_update_thread_app';
+/*
+ * This version of the Daily Mail update tracker uses Supabase for
+ * persistence instead of localStorage. It supports per‑user login,
+ * threaded updates with nested replies, category/description/status
+ * metadata, Excel/TSV table paste handling, a summary list of the
+ * latest updates, and collapsing/expanding of past updates. Each
+ * update is stored in the `entries` table and each user in the
+ * `users` table with foreign keys linking entries back to their
+ * author and parent entry. Set the following environment variables in
+ * your Vercel project to connect this app to Supabase:
+ *
+ *   VITE_SUPABASE_URL – your Supabase project URL
+ *   VITE_SUPABASE_ANON_KEY – your Supabase anon API key
+ */
 
-function App() {
-  // Currently logged in user. If null, the user must log in before using the app
+// Initialise the Supabase client using environment variables. When
+// running locally with Vite, ensure you set VITE_SUPABASE_URL and
+// VITE_SUPABASE_ANON_KEY in a `.env` file. In production, define
+// these variables in your deployment environment.
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+);
+
+// Helper to build a tree of entries from a flat list of rows. Each
+// entry will gain a `children` array holding its replies as well as
+// UI state flags used by the components (e.g. showHistory).
+function buildThreadHierarchy(rows) {
+  const map = {};
+  const roots = [];
+  rows.forEach((row) => {
+    map[row.id] = {
+      ...row,
+      children: [],
+      showHistory: false,
+    };
+  });
+  rows.forEach((row) => {
+    const node = map[row.id];
+    if (row.parent_id) {
+      const parent = map[row.parent_id];
+      if (parent) parent.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  });
+  return roots;
+}
+
+// Compute the latest activity within a thread. Walks the entry and
+// its descendants to find the most recent created_at or updated_at
+// timestamp. Returns the timestamp, the initials of the user who made
+// that update and the corresponding HTML. Used to sort and display
+// summaries.
+function getLastDetails(entry) {
+  let latestTime = entry.updated_at || entry.created_at;
+  let lastBy = entry.initials;
+  let lastHtml = entry.html;
+  if (entry.children && entry.children.length > 0) {
+    entry.children.forEach((child) => {
+      const details = getLastDetails(child);
+      if (new Date(details.latestTime) > new Date(latestTime)) {
+        latestTime = details.latestTime;
+        lastBy = details.lastBy;
+        lastHtml = details.lastHtml;
+      }
+    });
+  }
+  return { latestTime, lastBy, lastHtml };
+}
+
+export default function App() {
+  // Logged‑in user object { id, initials, name } or null if not logged in
   const [currentUser, setCurrentUser] = useState(null);
-  // Temporary fields used on the login form
+  // Temporary state for the login form
   const [loginInitials, setLoginInitials] = useState('');
   const [loginName, setLoginName] = useState('');
-  // Entries hold the list of top-level threads and their nested replies
-  const [entries, setEntries] = useState([]);
-  // Users and the currently selected user initials
+  // Users list fetched from Supabase
   const [users, setUsers] = useState([]);
-  const [selectedUser, setSelectedUser] = useState('');
+  // Top level entries with nested children
+  const [entries, setEntries] = useState([]);
   // Form fields for new updates
   const [category, setCategory] = useState('RFQ');
   const [description, setDescription] = useState('');
   const [status, setStatus] = useState('New');
-  const [html, setHtml] = useState('');
-  // Which view to show: 'threads' for the threaded view, 'all' for the summary
+  // Which view to show: 'threads' or 'all'
   const [view, setView] = useState('threads');
   // If set, the threads view will scroll the entry with this id into view
   const [scrollToEntryId, setScrollToEntryId] = useState(null);
-  // Ref to the message input div for new updates
+  // Ref for the main message input
   const messageRef = useRef(null);
 
-  // On mount, load saved entries and users from localStorage
+  // Fetch users and entries from Supabase when the component mounts
   useEffect(() => {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-    setEntries(saved.entries || []);
-    setUsers(saved.users || []);
-    if (saved.currentUser) {
-      setCurrentUser(saved.currentUser);
+    async function load() {
+      const { data: usersData, error: usersError } = await supabase
+        .from('users')
+        .select('*')
+        .order('created_at', { ascending: true });
+      if (!usersError) {
+        setUsers(usersData || []);
+      } else {
+        console.error('Error fetching users', usersError);
+      }
+      const { data: entriesData, error: entriesError } = await supabase
+        .from('entries')
+        .select('*')
+        .order('created_at', { ascending: true });
+      if (!entriesError) {
+        // Enrich each entry with the author's initials for display convenience
+        const userLookup = {};
+        (usersData || []).forEach((u) => {
+          userLookup[u.id] = u;
+        });
+        const enriched = (entriesData || []).map((row) => ({
+          ...row,
+          initials: userLookup[row.user_id]?.initials || '',
+          name: userLookup[row.user_id]?.name || '',
+        }));
+        setEntries(buildThreadHierarchy(enriched));
+      } else {
+        console.error('Error fetching entries', entriesError);
+      }
     }
+    load();
   }, []);
 
-  // Persist entries and users to localStorage whenever they change
-  useEffect(() => {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ entries, users, currentUser })
-    );
-  }, [entries, users, currentUser]);
-
-  // Keep selectedUser in sync with the currentUser. When the logged in user changes,
-  // ensure that selectedUser reflects the current user's initials. When the user logs out,
-  // clear the selectedUser value.
-  useEffect(() => {
-    if (currentUser) {
-      setSelectedUser(currentUser.initials);
-    } else {
-      setSelectedUser('');
-    }
-  }, [currentUser]);
-
-  // If we switch to the threads view and have a pending scroll target, scroll into view
+  // When we switch to the threads view and have a scroll target, scroll that entry into view
   useEffect(() => {
     if (view === 'threads' && scrollToEntryId) {
       const el = document.getElementById(`entry-${scrollToEntryId}`);
@@ -66,72 +139,38 @@ function App() {
     }
   }, [view, scrollToEntryId]);
 
-  // Escape HTML to prevent injection when converting plain text to HTML
-  function escapeHtml(str) {
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
-
-  /**
-   * Attempt to log in with the provided initials and optional name. If the initials
-   * already exist in the users list, the existing user is set as the current user.
-   * If the initials are new, a name must be provided. Upon successful login, the
-   * login form fields are cleared.
-   */
-  function handleLogin() {
-    const initials = loginInitials.trim();
-    if (!initials) return;
-    // See if this user already exists
-    let user = users.find((u) => u.initials === initials);
-    if (user) {
-      setCurrentUser(user);
-      setLoginInitials('');
-      setLoginName('');
-      return;
-    }
-    // Create a new user if a name is provided
-    const name = loginName.trim();
-    if (!name) return;
-    user = { name, initials };
-    setUsers((prev) => [...prev, user]);
-    setCurrentUser(user);
-    setLoginInitials('');
-    setLoginName('');
-  }
-
-  /**
-   * Log out the current user. Clears the currentUser and resets selectedUser.
-   */
-  function handleLogout() {
-    setCurrentUser(null);
-    setSelectedUser('');
-  }
-
-  // Given a set of initials, return the full user name if available, otherwise fallback to initials. This
-  // helper makes it easy to display a meaningful name in the overview table when listing the
-  // last update author. If the user isn't found in the users array, we simply return the initials.
+  // Return the full name for a set of initials. Used for display in the
+  // summary lists. Falls back to initials if the user isn't found.
   function getUserName(initials) {
     const user = users.find((u) => u.initials === initials);
     return user ? user.name || user.initials : initials;
   }
 
-  // Define a simple palette for category and status tags. These colours are used to render
-  // coloured badges in the overview table at the top of the page. Feel free to adjust these
-  // values to suit your preferred palette.
+  // Colour palettes for category and status badges
   const categoryColors = {
-    RFQ: '#007bff', // blue
-    PO: '#28a745', // green
-    ETA: '#ffc107', // yellow
-    CLAIM: '#17a2b8', // teal
+    RFQ: '#007bff',
+    PO: '#28a745',
+    ETA: '#ffc107',
+    CLAIM: '#17a2b8',
   };
-
   const statusColors = {
-    New: '#6c757d', // grey
-    'In Progress': '#007bff', // blue
-    Complete: '#28a745', // green
-    Cancelled: '#dc3545', // red
+    New: '#6c757d',
+    'In Progress': '#007bff',
+    Complete: '#28a745',
+    Cancelled: '#dc3545',
   };
 
-  // Convert tab-separated text into an HTML table
+  // Escape HTML for plain text conversion. Prevents injection when
+  // converting TSV to table markup.
+  function escapeHtml(str) {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  // Convert tab separated values into an HTML table. Used when
+  // detecting a pasted TSV in the message input.
   function tsvToHtml(text) {
     if (!/\t/.test(text)) {
       return text
@@ -153,7 +192,10 @@ function App() {
     return `<table style="border-collapse: collapse;">${tableRows}</table>`;
   }
 
-  // Handle paste events on the main message input. Supports pasting HTML tables and TSV
+  // Handle paste events on the main message input. Supports pasting
+  // HTML tables from Excel and TSV plain text. Sanitises the pasted
+  // table and inserts it into the editable div. Updates the html
+  // state accordingly.
   const handlePaste = (e) => {
     const clipboardData = e.clipboardData;
     const htmlData = clipboardData.getData('text/html');
@@ -165,7 +207,7 @@ function App() {
         const doc = parser.parseFromString(htmlData, 'text/html');
         const table = doc.querySelector('table');
         tableHtml = table ? table.outerHTML : null;
-      } catch (_) {
+      } catch (err) {
         tableHtml = null;
       }
       if (!tableHtml) {
@@ -178,9 +220,6 @@ function App() {
       tableHtml = tableHtml.replace(/<td[^>]*>/gi, '<td style="border: 1px solid #ccc; padding: 4px;">');
       if (messageRef.current) {
         document.execCommand('insertHTML', false, tableHtml);
-        setHtml(messageRef.current.innerHTML);
-      } else {
-        setHtml((prev) => prev + tableHtml);
       }
       return;
     }
@@ -190,597 +229,582 @@ function App() {
       const tableHtml = tsvToHtml(plain);
       if (messageRef.current) {
         document.execCommand('insertHTML', false, tableHtml);
-        setHtml(messageRef.current.innerHTML);
-      } else {
-        setHtml((prev) => prev + tableHtml);
       }
     }
   };
 
-  // Add a new user to the dropdown
-  function addUser(name, initials) {
+  // Log in as an existing user or create a new user if initials are
+  // unknown. Requires the name for new users. Clears the login
+  // fields on success.
+  async function handleLogin() {
+    const initials = loginInitials.trim();
     if (!initials) return;
-    if (users.some((u) => u.initials === initials)) return;
-    setUsers((prev) => [...prev, { name, initials }]);
-    setSelectedUser(initials);
+    let user = users.find((u) => u.initials === initials);
+    if (!user) {
+      const name = loginName.trim();
+      if (!name) return;
+      const { data, error } = await supabase
+        .from('users')
+        .insert({ initials, name })
+        .select()
+        .single();
+      if (error) {
+        console.error('Error creating user', error);
+        return;
+      }
+      user = data;
+      setUsers((prev) => [...prev, user]);
+    }
+    setCurrentUser(user);
+    setLoginInitials('');
+    setLoginName('');
   }
 
-  // Add a new entry or reply. Replies inherit the parent entry's category, description and status
-  function addEntry(
-    parentId = null,
-    entryHtml = html,
-    entryCategory = category,
-    entryDescription = description,
-    entryStatus = status
-  ) {
-    // Use the current user's initials if logged in. Replies inherit from the parent when
-    // the current user is not set (this should not happen once login is required).
-    let initials = currentUser ? currentUser.initials : selectedUser;
-    if (!initials && parentId) {
-      const findById = (list, id) => {
-        for (const item of list) {
-          if (item.id === id) return item;
-          const found = findById(item.children, id);
-          if (found) return found;
-        }
-        return null;
-      };
-      const parentEntry = findById(entries, parentId);
-      if (parentEntry) {
-        initials = parentEntry.initials;
+  // Log out the current user
+  function handleLogout() {
+    setCurrentUser(null);
+  }
+
+  // Recursively search for an entry by id within the tree. Returns the
+  // entry if found, otherwise undefined.
+  function findEntry(entriesList, id) {
+    for (const entry of entriesList) {
+      if (entry.id === id) return entry;
+      if (entry.children) {
+        const found = findEntry(entry.children, id);
+        if (found) return found;
       }
     }
-    if (!initials || !entryHtml.trim()) return;
-    const newEntry = {
-      id: Date.now().toString(),
-      parentId,
-      initials,
-      category: entryCategory,
-      description: entryDescription,
-      html: entryHtml,
-      status: entryStatus,
-      createdAt: new Date().toISOString(),
-      editedAt: null,
-      editedBy: null,
-      children: [],
-    };
-    setEntries((prev) => {
+    return undefined;
+  }
+
+  // Add a new entry or reply. When adding a reply, the category and
+  // description inherit from the parent entry. After inserting into
+  // Supabase, refresh the local entries by reloading data.
+  async function addEntry(parentId = null, entryHtml = null, entryStatus = null) {
+    const html = entryHtml !== null ? entryHtml : messageRef.current?.innerHTML || '';
+    if (!html.trim()) return;
+    if (!currentUser) return;
+    let newCategory = category;
+    let newDescription = description;
+    let newStatus = entryStatus || status;
+    if (parentId) {
+      const parent = findEntry(entries, parentId);
+      if (parent) {
+        newCategory = parent.category;
+        newDescription = parent.description;
+        newStatus = parent.status;
+      }
+    }
+    const { data, error } = await supabase
+      .from('entries')
+      .insert({
+        parent_id: parentId,
+        user_id: currentUser.id,
+        category: newCategory,
+        description: newDescription,
+        status: newStatus,
+        html: html,
+      })
+      .select()
+      .single();
+    if (error) {
+      console.error('Error inserting entry', error);
+    } else if (data) {
+      // Reload data to incorporate the new entry into the hierarchy
+      const { data: entriesData, error: entriesError } = await supabase
+        .from('entries')
+        .select('*')
+        .order('created_at', { ascending: true });
+      if (!entriesError) {
+        const userLookup = {};
+        users.forEach((u) => {
+          userLookup[u.id] = u;
+        });
+        const enriched = (entriesData || []).map((row) => ({
+          ...row,
+          initials: userLookup[row.user_id]?.initials || '',
+          name: userLookup[row.user_id]?.name || '',
+        }));
+        setEntries(buildThreadHierarchy(enriched));
+      }
+      // Clear the form fields when adding a top‑level entry
       if (!parentId) {
-        return [...prev, newEntry];
+        setDescription('');
+        if (messageRef.current) messageRef.current.innerHTML = '';
       }
-      const addToParent = (list) =>
-        list.map((item) => {
-          if (item.id === parentId) {
-            return { ...item, children: [...item.children, newEntry] };
-          }
-          return { ...item, children: addToParent(item.children) };
-        });
-      return addToParent(prev);
-    });
-    setHtml('');
-    setCategory('RFQ');
-    setDescription('');
-    setStatus('New');
-    if (messageRef.current) {
-      messageRef.current.innerHTML = '';
     }
   }
 
-  // Update an existing entry with new fields (html and/or status)
-  function updateEntry(id, fields) {
-    setEntries((prev) => {
-      const update = (list) =>
-        list.map((item) => {
-          if (item.id === id) {
-            // When editing, record the current user as the editor if available, otherwise fall back to selectedUser
-            const editor = currentUser ? currentUser.initials : selectedUser;
-            return { ...item, ...fields, editedAt: new Date().toISOString(), editedBy: editor };
-          }
-          return { ...item, children: update(item.children) };
+  // Update an entry's HTML or status. If the status changes, pass the
+  // new status; otherwise pass undefined. After updating, reload
+  // entries to reflect changes.
+  async function updateEntry(id, newHtml, newStatus) {
+    const updates = {};
+    if (newHtml !== undefined) updates.html = newHtml;
+    if (newStatus !== undefined) updates.status = newStatus;
+    updates.updated_at = new Date().toISOString();
+    const { error } = await supabase
+      .from('entries')
+      .update(updates)
+      .eq('id', id);
+    if (error) {
+      console.error('Error updating entry', error);
+    } else {
+      // Reload data to update local state
+      const { data: entriesData, error: entriesError } = await supabase
+        .from('entries')
+        .select('*')
+        .order('created_at', { ascending: true });
+      if (!entriesError) {
+        const userLookup = {};
+        users.forEach((u) => {
+          userLookup[u.id] = u;
         });
-      return update(prev);
-    });
-  }
-
-  // Find the latest update timestamp and user for a thread
-  function getLastInfo(entry) {
-    let latest = entry.editedAt || entry.createdAt;
-    let lastBy = entry.editedAt ? (entry.editedBy || entry.initials) : entry.initials;
-    entry.children.forEach((child) => {
-      const info = getLastInfo(child);
-      if (info.latest > latest) {
-        latest = info.latest;
-        lastBy = info.lastBy;
+        const enriched = (entriesData || []).map((row) => ({
+          ...row,
+          initials: userLookup[row.user_id]?.initials || '',
+          name: userLookup[row.user_id]?.name || '',
+        }));
+        setEntries(buildThreadHierarchy(enriched));
       }
-    });
-    return { latest, lastBy };
+    }
   }
 
-  // Find the latest update details (timestamp, user and html) for a thread
-  function getLastDetails(entry) {
-    let latestTime = entry.editedAt || entry.createdAt;
-    let lastBy = entry.editedAt ? (entry.editedBy || entry.initials) : entry.initials;
-    let lastHtml = entry.html;
-    entry.children.forEach((child) => {
-      const info = getLastDetails(child);
-      if (new Date(info.latestTime) > new Date(latestTime)) {
-        latestTime = info.latestTime;
-        lastBy = info.lastBy;
-        lastHtml = info.lastHtml;
-      }
-    });
-    return { latestTime, lastBy, lastHtml };
-  }
-
-  // Navigate back to threads view and scroll to a specific entry id
-  function goToThread(id) {
-    setView('threads');
-    setScrollToEntryId(id);
-  }
-
-  // Sort threads by their latest activity
-  const sortedEntries = [...entries].sort((a, b) => {
-    const al = getLastInfo(a).latest;
-    const bl = getLastInfo(b).latest;
-    return bl.localeCompare(al);
-  });
-
-  // Component to render a single entry and its replies
-  function Entry({ entry, depth = 0 }) {
+  // Component to render an individual entry and its children. Handles
+  // collapsed view at depth zero (show only the latest update) and
+  // editing/replying functionality.
+  function EntryComponent({ entry, depth }) {
     const [editing, setEditing] = useState(false);
     const [editHtml, setEditHtml] = useState(entry.html);
     const [editStatus, setEditStatus] = useState(entry.status);
     const [replying, setReplying] = useState(false);
-    const [replyHtml, setReplyHtml] = useState('');
-    // For top-level entries, collapsed by default; nested entries always expanded
-    const [showHistory, setShowHistory] = useState(depth !== 0);
-    const editRef = useRef(null);
     const replyRef = useRef(null);
 
-    // Handle paste for edit and reply contentEditable fields
-    const handleGenericPaste = (e, ref, setValue) => {
-      const clipboardData = e.clipboardData;
-      const htmlData = clipboardData.getData('text/html');
-      if (htmlData && /<table/i.test(htmlData)) {
-        e.preventDefault();
-        let tableHtml;
-        try {
-          const parser = new DOMParser();
-          const doc = parser.parseFromString(htmlData, 'text/html');
-          const table = doc.querySelector('table');
-          tableHtml = table ? table.outerHTML : null;
-        } catch (_) {
-          tableHtml = null;
-        }
-        if (!tableHtml) {
-          const match = htmlData.match(/<table[\s\S]*?<\/table>/i);
-          tableHtml = match ? match[0] : htmlData;
-        }
-        tableHtml = tableHtml.replace(/<col[^>]*>/gi, '');
-        tableHtml = tableHtml.replace(/<tr[^>]*>/gi, '<tr>');
-        tableHtml = tableHtml.replace(/<table[^>]*>/i, '<table style="border-collapse: collapse;">');
-        tableHtml = tableHtml.replace(/<td[^>]*>/gi, '<td style="border: 1px solid #ccc; padding: 4px;">');
-        if (ref.current) {
-          document.execCommand('insertHTML', false, tableHtml);
-          setValue(ref.current.innerHTML);
-        } else {
-          setValue((prev) => prev + tableHtml);
-        }
-        return;
-      }
-      const plain = clipboardData.getData('text/plain');
-      if (plain && /\t/.test(plain)) {
-        e.preventDefault();
-        const tableHtml = tsvToHtml(plain);
-        if (ref.current) {
-          document.execCommand('insertHTML', false, tableHtml);
-          setValue(ref.current.innerHTML);
-        } else {
-          setValue((prev) => prev + tableHtml);
-        }
-      }
+    // Paste handler reused for reply and edit inputs
+    const handleReplyPaste = handlePaste;
+
+    const saveEdit = async () => {
+      await updateEntry(entry.id, editHtml, editStatus);
+      setEditing(false);
     };
 
-    // Save edits to an entry
-    function handleEditSave() {
-      const latestHtml = editRef.current ? editRef.current.innerHTML : editHtml;
-      updateEntry(entry.id, { html: latestHtml, status: editStatus });
-      setEditing(false);
-    }
-
-    // Save a reply to this entry
-    function handleReplySave() {
-      const latestReply = replyRef.current ? replyRef.current.innerHTML : replyHtml;
-      addEntry(entry.id, latestReply, entry.category, entry.description, entry.status);
+    const saveReply = async () => {
+      const html = replyRef.current?.innerHTML || '';
+      if (!html.trim()) return;
+      await addEntry(entry.id, html, null);
       setReplying(false);
-      setReplyHtml('');
-    }
+    };
 
-    // Collapsed view for top-level entries shows only the latest update
-    if (!showHistory && depth === 0) {
-      const details = getLastDetails(entry);
-      return (
-        <div id={`entry-${entry.id}`} style={{ border: '1px solid #ddd', padding: '8px', marginTop: '8px', marginLeft: depth ? depth * 20 + 'px' : '0' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ fontWeight: 'bold' }}>
-              {entry.category}
-              {entry.description ? ' - ' + entry.description : ''}
-            </div>
-            <div>
-              <span style={{ borderRadius: '4px', padding: '2px 6px', border: '1px solid #ccc', fontSize: '0.75em' }}>{entry.status}</span>
-            </div>
-          </div>
-          <div style={{ fontSize: '0.8em', color: '#666' }}>
-            {details.lastBy} - {new Date(details.latestTime).toLocaleString()}
-          </div>
-          <div dangerouslySetInnerHTML={{ __html: details.lastHtml }} />
-          <button onClick={() => setShowHistory(true)} style={{ marginTop: '4px' }}>
-            Show past updates
-          </button>
-        </div>
-      );
-    }
+    const toggleHistory = () => {
+      entry.showHistory = !entry.showHistory;
+      // Trigger a re-render by updating state
+      setEntries([...entries]);
+    };
 
-    // Expanded view shows the full entry and its history
+    // Determine if we should show the collapsed view: only for top level
+    // entries (depth === 0) and when the entry is collapsed (showHistory false)
+    const showCollapsed = depth === 0 && !entry.showHistory;
+
     return (
-      <div id={`entry-${entry.id}`} style={{ border: '1px solid #ddd', padding: '8px', marginTop: '8px', marginLeft: depth ? depth * 20 + 'px' : '0' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ fontWeight: 'bold' }}>
-            {entry.category}
-            {entry.description ? ' - ' + entry.description : ''}
-          </div>
+      <div
+        id={`entry-${entry.id}`}
+        style={{
+          marginLeft: depth * 20,
+          border: depth === 0 ? '1px solid #ddd' : '1px solid #eee',
+          borderTop: depth === 0 ? '2px solid #999' : undefined,
+          padding: '8px',
+          marginTop: '8px',
+        }}
+      >
+        {showCollapsed ? (
           <div>
-            <span style={{ borderRadius: '4px', padding: '2px 6px', border: '1px solid #ccc', marginLeft: '8px', fontSize: '0.75em' }}>{entry.status}</span>
-            {depth === 0 && (
-              <button onClick={() => setShowHistory(false)} style={{ marginLeft: '8px' }}>
-                Hide past updates
-              </button>
-            )}
+            <div>
+              <strong>
+                <span
+                  style={{
+                    backgroundColor: categoryColors[entry.category],
+                    color: 'white',
+                    padding: '2px 6px',
+                    borderRadius: '4px',
+                    marginRight: '4px',
+                    fontSize: '0.8em',
+                  }}
+                >
+                  {entry.category}
+                </span>
+                {entry.description}
+              </strong>
+            </div>
+            <div style={{ fontSize: '0.8em', color: '#555' }}>
+              {getUserName(entry.initials)} -{' '}
+              {new Date(entry.updated_at || entry.created_at).toLocaleString()}
+            </div>
+            <div dangerouslySetInnerHTML={{ __html: entry.html }} />
+            <button onClick={toggleHistory}>Show past updates</button>
           </div>
-        </div>
-        <div style={{ fontSize: '0.8em', color: '#666' }}>
-          {entry.initials} - {new Date(entry.createdAt).toLocaleString()}
-        </div>
-        {entry.editedAt && (
-          <div style={{ fontSize: '0.7em', color: '#666' }}>
-            edited {new Date(entry.editedAt).toLocaleString()} by {entry.editedBy || entry.initials}
-          </div>
-        )}
-        {!editing ? (
-          <div dangerouslySetInnerHTML={{ __html: entry.html }} />
         ) : (
           <div>
-            <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>
-              {entry.category}
-              {entry.description ? ' - ' + entry.description : ''}
+            {depth === 0 && (
+              <div>
+                <strong>
+                  <span
+                    style={{
+                      backgroundColor: categoryColors[entry.category],
+                      color: 'white',
+                      padding: '2px 6px',
+                      borderRadius: '4px',
+                      marginRight: '4px',
+                      fontSize: '0.8em',
+                    }}
+                  >
+                    {entry.category}
+                  </span>
+                  {entry.description}
+                </strong>
+                <span
+                  style={{
+                    backgroundColor: statusColors[entry.status],
+                    color: 'white',
+                    padding: '2px 6px',
+                    borderRadius: '4px',
+                    marginLeft: '8px',
+                    fontSize: '0.8em',
+                  }}
+                >
+                  {entry.status}
+                </span>
+              </div>
+            )}
+            <div style={{ fontSize: '0.8em', color: '#555' }}>
+              {getUserName(entry.initials)} -{' '}
+              {new Date(entry.updated_at || entry.created_at).toLocaleString()}{' '}
+              {entry.updated_at && entry.updated_at !== entry.created_at && <em>(edited)</em>}
             </div>
-            <select value={editStatus} onChange={(e) => setEditStatus(e.target.value)} style={{ marginBottom: '4px' }}>
-              {['New', 'In Progress', 'Complete', 'Cancelled'].map((opt) => (
-                <option key={opt} value={opt}>
-                  {opt}
-                </option>
+            {editing ? (
+              <div style={{ marginTop: '4px' }}>
+                <select
+                  value={editStatus}
+                  onChange={(e) => setEditStatus(e.target.value)}
+                  style={{ marginRight: '8px' }}
+                >
+                  {Object.keys(statusColors).map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+                <div
+                  ref={replyRef}
+                  contentEditable
+                  suppressContentEditableWarning
+                  style={{ border: '1px solid #ccc', padding: '4px', minHeight: '80px', marginTop: '4px' }}
+                  onInput={() => setEditHtml(replyRef.current.innerHTML)}
+                  onPaste={handleReplyPaste}
+                  dangerouslySetInnerHTML={{ __html: editHtml }}
+                />
+                <button onClick={saveEdit}>Save</button>
+                <button onClick={() => setEditing(false)} style={{ marginLeft: '8px' }}>
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <div style={{ marginTop: '4px' }} dangerouslySetInnerHTML={{ __html: entry.html }} />
+            )}
+            {!editing && currentUser && entry.user_id === currentUser.id && (
+              <button onClick={() => {
+                setEditing(true);
+                setEditHtml(entry.html);
+                setEditStatus(entry.status);
+              }}>
+                Edit
+              </button>
+            )}
+            {!editing && currentUser && (
+              <button onClick={() => setReplying(!replying)} style={{ marginLeft: '8px' }}>
+                {replying ? 'Cancel Reply' : 'Reply'}
+              </button>
+            )}
+            {replying && currentUser && (
+              <div style={{ marginTop: '4px' }}>
+                <div
+                  ref={replyRef}
+                  contentEditable
+                  suppressContentEditableWarning
+                  style={{ border: '1px solid #ccc', padding: '4px', minHeight: '80px' }}
+                  onPaste={handleReplyPaste}
+                />
+                <button onClick={saveReply}>Save Reply</button>
+              </div>
+            )}
+            {/* Render children */}
+            {entry.children &&
+              entry.children.map((child) => (
+                <EntryComponent key={child.id} entry={child} depth={depth + 1} />
               ))}
-            </select>
-            <div
-              ref={editRef}
-              contentEditable
-              onPaste={(e) => handleGenericPaste(e, editRef, setEditHtml)}
-              onInput={() => {
-                if (editRef.current) {
-                  setEditHtml(editRef.current.innerHTML);
-                }
-              }}
-              dangerouslySetInnerHTML={{ __html: editHtml }}
-              style={{
-                width: '100%',
-                height: '80px',
-                padding: '4px',
-                border: '1px solid #ccc',
-                overflowY: 'auto',
-                whiteSpace: 'pre-wrap',
-              }}
-            ></div>
+            {depth === 0 && (
+              <div>
+                <button onClick={toggleHistory} style={{ marginTop: '4px' }}>
+                  {entry.showHistory ? 'Hide past updates' : 'Show past updates'}
+                </button>
+              </div>
+            )}
           </div>
         )}
-        <div style={{ marginTop: '4px' }}>
-          {!editing ? (
-            <button onClick={() => setEditing(true)}>Edit</button>
-          ) : (
-            <button onClick={handleEditSave}>Save</button>
-          )}
-          {!replying ? (
-            <button onClick={() => setReplying(true)} style={{ marginLeft: '4px' }}>
-              Reply
-            </button>
-          ) : (
-            <span style={{ display: 'block', marginTop: '4px' }}>
-              <div
-                ref={replyRef}
-                contentEditable
-                onPaste={(e) => handleGenericPaste(e, replyRef, setReplyHtml)}
-                onInput={() => {
-                  if (replyRef.current) {
-                    setReplyHtml(replyRef.current.innerHTML);
-                  }
-                }}
-                style={{
-                  width: '100%',
-                  height: '60px',
-                  padding: '4px',
-                  border: '1px solid #ccc',
-                  overflowY: 'auto',
-                  whiteSpace: 'pre-wrap',
-                }}
-              ></div>
-              <button onClick={handleReplySave}>Save Reply</button>
-            </span>
-          )}
-        </div>
-        {entry.children &&
-          entry.children.map((child) => (
-            <Entry key={child.id} entry={child} depth={depth + 1} />
-          ))}
       </div>
     );
   }
 
-  // If no user is logged in, render a simple login form. Existing users can select
-  // their initials from a list; new users must provide both initials and a full name.
-  if (!currentUser) {
-    return (
-      <div style={{ padding: '16px', fontFamily: 'sans-serif' }}>
-        <h1>Daily Mail</h1>
-        <div style={{ marginTop: '16px' }}>
-          <div>
-            <label style={{ marginRight: '4px' }}>Initials:</label>
-            <input
-              value={loginInitials}
-              onChange={(e) => setLoginInitials(e.target.value)}
-              placeholder="Initials"
-              style={{ width: '80px' }}
-            />
-            {/* Show name field only when the initials are not found among existing users */}
-            {!users.some((u) => u.initials === loginInitials.trim()) && (
-              <input
-                value={loginName}
-                onChange={(e) => setLoginName(e.target.value)}
-                placeholder="Full name"
-                style={{ marginLeft: '4px' }}
-              />
-            )}
-            <button onClick={handleLogin} style={{ marginLeft: '4px' }}>
-              Log in
-            </button>
-          </div>
-          {users.length > 0 && (
-            <div style={{ marginTop: '8px', fontSize: '0.9em' }}>
-              <strong>Existing users:</strong>{' '}
-              {users.map((u) => (
-                <span key={u.initials} style={{ marginRight: '8px' }}>
-                  {u.initials}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
+  // Build the summary list from top level entries. Each summary object
+  // contains the id, category, description, status, latest activity
+  // timestamp and the initials of the user who made that update. Used
+  // by both the overview grid and the All Updates page.
+  const summaries = entries
+    .map((entry) => {
+      const { latestTime, lastBy } = getLastDetails(entry);
+      return {
+        id: entry.id,
+        category: entry.category,
+        description: entry.description,
+        status: entry.status,
+        latestTime,
+        lastBy,
+      };
+    })
+    .sort((a, b) => new Date(b.latestTime) - new Date(a.latestTime));
 
-  // Render the main app when a user is logged in
   return (
     <div style={{ padding: '16px', fontFamily: 'sans-serif' }}>
       <h1>Daily Mail</h1>
-      <div style={{ marginBottom: '16px' }}>
-        {/* Show the logged in user and a logout button */}
-        <div style={{ marginBottom: '8px' }}>
-          <span>
-            Logged in as {currentUser.name || currentUser.initials} ({currentUser.initials})
-          </span>
-          <button onClick={handleLogout} style={{ marginLeft: '8px' }}>
-            Logout
-          </button>
-        </div>
-        <div style={{ marginTop: '8px' }}>
-          <label style={{ marginRight: '4px' }}>Category:</label>
-          <select value={category} onChange={(e) => setCategory(e.target.value)}>
-            {['RFQ', 'PO', 'ETA', 'CLAIM'].map((opt) => (
-              <option key={opt} value={opt}>
-                {opt}
-              </option>
-            ))}
-          </select>
-        </div>
-        <input
-          placeholder="Description"
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          style={{ width: '100%', marginTop: '4px' }}
-        />
-        <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ marginTop: '4px' }}>
-          {['New', 'In Progress', 'Complete', 'Cancelled'].map((opt) => (
-            <option key={opt} value={opt}>
-              {opt}
-            </option>
-          ))}
-        </select>
-        <div
-          ref={messageRef}
-          contentEditable
-          onPaste={handlePaste}
-          onInput={() => {
-            if (messageRef.current) {
-              setHtml(messageRef.current.innerHTML);
-            }
-          }}
-          style={{
-            width: '100%',
-            height: '100px',
-            marginTop: '4px',
-            padding: '4px',
-            border: '1px solid #ccc',
-            overflowY: 'auto',
-            whiteSpace: 'pre-wrap',
-          }}
-          data-placeholder="Enter your message. Paste Excel/TSV tables here."
-        ></div>
-        <button onClick={() => addEntry()} style={{ marginTop: '4px' }}>
-          Save
-        </button>
-      </div>
-      <div>
-        <button onClick={() => setView('threads')}>Threads</button>
-        <button onClick={() => setView('all')} style={{ marginLeft: '4px' }}>
-          All Updates
-        </button>
-      </div>
-      {view === 'threads' ? (
+      {currentUser ? (
         <div>
-          {/* Overview table showing each thread and its latest update */}
+          <div style={{ marginBottom: '8px' }}>
+            Logged in as {currentUser.name} ({currentUser.initials}){' '}
+            <button onClick={handleLogout}>Logout</button>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+            <label>
+              Category:{' '}
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                style={{ marginLeft: '4px' }}
+              >
+                {Object.keys(categoryColors).map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Description"
+              style={{ flex: '1 1 200px' }}
+            />
+            <label>
+              Status:{' '}
+              <select
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+                style={{ marginLeft: '4px' }}
+              >
+                {Object.keys(statusColors).map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
           <div
+            ref={messageRef}
+            contentEditable
+            suppressContentEditableWarning
+            onPaste={handlePaste}
             style={{
-              marginTop: '16px',
-              border: '1px solid #ddd',
-              borderRadius: '4px',
-              overflow: 'hidden',
+              border: '1px solid #ccc',
+              padding: '8px',
+              minHeight: '100px',
+              marginTop: '8px',
             }}
+          />
+          <button
+            onClick={() => addEntry(null)}
+            disabled={!currentUser}
+            style={{ marginTop: '8px' }}
           >
-            {/* Overview header: define four columns to match the summary table design */}
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '3fr 1fr 1fr 2fr',
-                fontWeight: 'bold',
-                backgroundColor: '#f4f4f4',
-                borderBottom: '1px solid #ddd',
-                padding: '8px 4px',
-              }}
+            Save
+          </button>
+          <div style={{ marginTop: '16px' }}>
+            <button
+              onClick={() => setView('threads')}
+              disabled={view === 'threads'}
             >
-              <div>Item</div>
-              <div>Status</div>
-              <div>Updated by</div>
-              <div>Last update</div>
-            </div>
-            {/* Iterate through each top-level thread to build a clickable summary row */}
-            {sortedEntries.map((entry) => {
-              const details = getLastDetails(entry);
-              const entryUser = getUserName(details.lastBy);
-              return (
+              Threads
+            </button>
+            <button
+              onClick={() => setView('all')}
+              disabled={view === 'all'}
+              style={{ marginLeft: '8px' }}
+            >
+              All Updates
+            </button>
+          </div>
+          {view === 'threads' ? (
+            <div>
+              {/* Overview grid at top of threads view */}
+              <div style={{ marginTop: '16px', border: '1px solid #ddd' }}>
                 <div
-                  key={'overview-' + entry.id}
-                  onClick={() => goToThread(entry.id)}
                   style={{
                     display: 'grid',
-                    gridTemplateColumns: '3fr 1fr 1fr 2fr',
-                    padding: '6px 4px',
-                    alignItems: 'center',
-                    cursor: 'pointer',
-                    borderBottom: '1px solid #f0f0f0',
-                    fontSize: '0.9em',
+                    gridTemplateColumns: '2fr 1fr 1fr',
+                    background: '#f5f5f5',
+                    padding: '8px',
+                    fontWeight: 'bold',
                   }}
                 >
-                  {/* Title column shows the category tag and description */}
+                  <div>Item</div>
+                  <div>Status</div>
+                  <div>Last update</div>
+                </div>
+                {summaries.map((summary) => (
+                  <div
+                    key={summary.id}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '2fr 1fr 1fr',
+                      borderTop: '1px solid #eee',
+                      padding: '8px',
+                      alignItems: 'center',
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => {
+                      setView('threads');
+                      setScrollToEntryId(summary.id);
+                    }}
+                  >
+                    <div>
+                      <span
+                        style={{
+                          backgroundColor: categoryColors[summary.category],
+                          color: 'white',
+                          padding: '2px 6px',
+                          borderRadius: '4px',
+                          marginRight: '4px',
+                          fontSize: '0.8em',
+                        }}
+                      >
+                        {summary.category}
+                      </span>
+                      {summary.description}
+                    </div>
+                    <div>
+                      <span
+                        style={{
+                          backgroundColor: statusColors[summary.status],
+                          color: 'white',
+                          padding: '2px 6px',
+                          borderRadius: '4px',
+                          fontSize: '0.8em',
+                        }}
+                      >
+                        {summary.status}
+                      </span>
+                    </div>
+                    <div>
+                      {getUserName(summary.lastBy)}
+                      <br />
+                      <span style={{ fontSize: '0.8em', color: '#555' }}>
+                        {new Date(summary.latestTime).toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {/* Threaded entries */}
+              {entries.map((entry) => (
+                <EntryComponent key={entry.id} entry={entry} depth={0} />
+              ))}
+            </div>
+          ) : (
+            <div style={{ marginTop: '16px' }}>
+              <h2>All Updates</h2>
+              {summaries.map((summary) => (
+                <div
+                  key={summary.id}
+                  style={{
+                    border: '1px solid #ddd',
+                    padding: '8px',
+                    marginTop: '8px',
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => {
+                    setView('threads');
+                    setScrollToEntryId(summary.id);
+                  }}
+                >
                   <div>
                     <span
                       style={{
-                        backgroundColor: categoryColors[entry.category] || '#ccc',
+                        backgroundColor: categoryColors[summary.category],
                         color: 'white',
                         padding: '2px 6px',
                         borderRadius: '4px',
                         marginRight: '4px',
-                        fontSize: '0.75em',
+                        fontSize: '0.8em',
                       }}
                     >
-                      {entry.category}
+                      {summary.category}
                     </span>
-                    {entry.description ? entry.description : '(untitled)'}
+                    {summary.description}
                   </div>
-                  {/* Status column shows a coloured badge representing the current status */}
-                  <div>
+                  <div style={{ marginTop: '4px' }}>
                     <span
                       style={{
-                        backgroundColor: statusColors[entry.status] || '#ccc',
+                        backgroundColor: statusColors[summary.status],
                         color: 'white',
                         padding: '2px 6px',
                         borderRadius: '4px',
-                        fontSize: '0.75em',
+                        fontSize: '0.8em',
                       }}
                     >
-                      {entry.status}
-                    </span>
-                  </div>
-                  {/* Updated by column displays the full name (or initials) of the last updater */}
-                  <div style={{ fontSize: '0.8em', color: '#555' }}>{entryUser}</div>
-                  {/* Last update column shows the timestamp of the latest update */}
-                  <div style={{ fontSize: '0.8em', color: '#555' }}>
-                    {new Date(details.latestTime).toLocaleString()}
+                      {summary.status}
+                    </span>{' '}
+                    — {getUserName(summary.lastBy)} —{' '}
+                    {new Date(summary.latestTime).toLocaleString()}
                   </div>
                 </div>
-              );
-            })}
-          </div>
-          {/* Threads list */}
-          <div style={{ marginTop: '16px' }}>
-            {entries.map((entry) => (
-              <Entry key={entry.id} entry={entry} />
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       ) : (
         <div>
-          {/* Summary list for all threads. Each card shows the latest update's content, timestamp, and author. Clicking navigates to the thread. */}
-          {sortedEntries.map((entry) => {
-            const details = getLastDetails(entry);
-            return (
-              <div
-                key={entry.id}
-                onClick={() => goToThread(entry.id)}
-                style={{
-                  border: '1px solid #ddd',
-                  padding: '8px',
-                  marginTop: '8px',
-                  cursor: 'pointer',
-                  backgroundColor: '#f9f9f9',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ fontWeight: 'bold' }}>
-                    {entry.category}
-                    {entry.description ? ' - ' + entry.description : ''}
-                  </span>
-                  <span
-                    style={{
-                      borderRadius: '4px',
-                      padding: '2px 6px',
-                      border: '1px solid #ccc',
-                      fontSize: '0.75em',
-                    }}
-                  >
-                    {entry.status}
-                  </span>
-                </div>
-                <div style={{ fontSize: '0.8em', color: '#666', marginTop: '2px' }}>
-                  Latest: {new Date(details.latestTime).toLocaleString()} by {details.lastBy}
-                </div>
-                {/* Show a small preview of the latest update content. Use dangerouslySetInnerHTML to render HTML tables. */}
-                <div
-                  dangerouslySetInnerHTML={{ __html: details.lastHtml }}
-                  style={{
-                    marginTop: '4px',
-                    fontSize: '0.85em',
-                    maxHeight: '120px',
-                    overflow: 'hidden',
-                    borderTop: '1px solid #eee',
-                    paddingTop: '4px',
-                  }}
-                ></div>
-              </div>
-            );
-          })}
+          <h2>Login</h2>
+          <div style={{ display: 'flex', flexDirection: 'column', maxWidth: '300px', gap: '8px' }}>
+            <input
+              value={loginInitials}
+              onChange={(e) => setLoginInitials(e.target.value)}
+              placeholder="Initials"
+            />
+            <input
+              value={loginName}
+              onChange={(e) => setLoginName(e.target.value)}
+              placeholder="Full name (if new user)"
+            />
+            <button onClick={handleLogin}>Log in</button>
+          </div>
+          {users.length > 0 && (
+            <div style={{ marginTop: '12px' }}>
+              <strong>Existing users:</strong>{' '}
+              {users.map((u) => `${u.initials} (${u.name})`).join(', ')}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
-
-export default App;
