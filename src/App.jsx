@@ -107,50 +107,71 @@ function App() {
     setSelectedUser(initials);
   }
 
-  function addEntry(
-    parentId = null,
-    entryHtml = html,
-    entryCategory = category,
-    entryDescription = description,
-    entryStatus = status
-  ) {
-    if (!selectedUser || !entryHtml.trim()) return;
-    const newEntry = {
-      id: Date.now().toString(),
-      parentId,
-      initials: selectedUser,
-      category: entryCategory,
-      description: entryDescription,
-      html: entryHtml,
-      status: entryStatus,
-      createdAt: new Date().toISOString(),
-      editedAt: null,
-      editedBy: null,
-      children: [],
-    };
-    setEntries((prev) => {
-      if (!parentId) {
-        return [...prev, newEntry];
-      }
-      const addToParent = (list) =>
-        list.map((item) => {
-          if (item.id === parentId) {
-            return { ...item, children: [...item.children, newEntry] };
-          }
-          return { ...item, children: addToParent(item.children) };
-        });
-      return addToParent(prev);
-    });
-    setHtml('');
-    // Reset category and description after saving
-    setCategory('RFQ');
-    setDescription('');
-    setStatus('New');
-    // Clear content of the editable div so the user sees an empty message area
-    if (messageRef.current) {
-      messageRef.current.innerHTML = '';
-    }
-  }
+       function addEntry(
+         parentId = null,
+         entryHtml = html,
+         entryCategory = category,
+         entryDescription = description,
+         entryStatus = status
+       ) {
+         // Determine which user's initials to apply to this entry. Use the
+         // currently selected user if present. Otherwise, for replies,
+         // inherit the initials from the parent entry so that a user can
+         // quickly reply without manually re-selecting their initials.
+         let initials = selectedUser;
+         if (!initials && parentId) {
+           // Search the entries tree for the parent entry to get its initials
+           const findById = (list, id) => {
+             for (const item of list) {
+               if (item.id === id) return item;
+               const found = findById(item.children, id);
+               if (found) return found;
+             }
+             return null;
+           };
+           const parentEntry = findById(entries, parentId);
+           if (parentEntry) {
+             initials = parentEntry.initials;
+           }
+         }
+         // Do not create an entry if we still have no initials or no content
+         if (!initials || !entryHtml.trim()) return;
+         const newEntry = {
+           id: Date.now().toString(),
+           parentId,
+           initials,
+           category: entryCategory,
+           description: entryDescription,
+           html: entryHtml,
+           status: entryStatus,
+           createdAt: new Date().toISOString(),
+           editedAt: null,
+           editedBy: null,
+           children: [],
+         };
+         setEntries((prev) => {
+           if (!parentId) {
+             return [...prev, newEntry];
+           }
+           const addToParent = (list) =>
+             list.map((item) => {
+               if (item.id === parentId) {
+                 return { ...item, children: [...item.children, newEntry] };
+               }
+               return { ...item, children: addToParent(item.children) };
+             });
+           return addToParent(prev);
+         });
+         setHtml('');
+         // Reset category and description after saving
+         setCategory('RFQ');
+         setDescription('');
+         setStatus('New');
+         // Clear content of the editable div so the user sees an empty message area
+         if (messageRef.current) {
+           messageRef.current.innerHTML = '';
+         }
+       }
 
   function updateEntry(id, fields) {
     setEntries((prev) => {
