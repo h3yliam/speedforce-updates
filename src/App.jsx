@@ -4,6 +4,11 @@ import React, { useState, useEffect, useRef } from 'react';
 const STORAGE_KEY = 'speedforce_update_thread_app';
 
 function App() {
+  // Currently logged in user. If null, the user must log in before using the app
+  const [currentUser, setCurrentUser] = useState(null);
+  // Temporary fields used on the login form
+  const [loginInitials, setLoginInitials] = useState('');
+  const [loginName, setLoginName] = useState('');
   // Entries hold the list of top-level threads and their nested replies
   const [entries, setEntries] = useState([]);
   // Users and the currently selected user initials
@@ -26,12 +31,29 @@ function App() {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
     setEntries(saved.entries || []);
     setUsers(saved.users || []);
+    if (saved.currentUser) {
+      setCurrentUser(saved.currentUser);
+    }
   }, []);
 
   // Persist entries and users to localStorage whenever they change
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ entries, users }));
-  }, [entries, users]);
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ entries, users, currentUser })
+    );
+  }, [entries, users, currentUser]);
+
+  // Keep selectedUser in sync with the currentUser. When the logged in user changes,
+  // ensure that selectedUser reflects the current user's initials. When the user logs out,
+  // clear the selectedUser value.
+  useEffect(() => {
+    if (currentUser) {
+      setSelectedUser(currentUser.initials);
+    } else {
+      setSelectedUser('');
+    }
+  }, [currentUser]);
 
   // If we switch to the threads view and have a pending scroll target, scroll into view
   useEffect(() => {
@@ -47,6 +69,41 @@ function App() {
   // Escape HTML to prevent injection when converting plain text to HTML
   function escapeHtml(str) {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  /**
+   * Attempt to log in with the provided initials and optional name. If the initials
+   * already exist in the users list, the existing user is set as the current user.
+   * If the initials are new, a name must be provided. Upon successful login, the
+   * login form fields are cleared.
+   */
+  function handleLogin() {
+    const initials = loginInitials.trim();
+    if (!initials) return;
+    // See if this user already exists
+    let user = users.find((u) => u.initials === initials);
+    if (user) {
+      setCurrentUser(user);
+      setLoginInitials('');
+      setLoginName('');
+      return;
+    }
+    // Create a new user if a name is provided
+    const name = loginName.trim();
+    if (!name) return;
+    user = { name, initials };
+    setUsers((prev) => [...prev, user]);
+    setCurrentUser(user);
+    setLoginInitials('');
+    setLoginName('');
+  }
+
+  /**
+   * Log out the current user. Clears the currentUser and resets selectedUser.
+   */
+  function handleLogout() {
+    setCurrentUser(null);
+    setSelectedUser('');
   }
 
   // Given a set of initials, return the full user name if available, otherwise fallback to initials. This
@@ -156,7 +213,9 @@ function App() {
     entryDescription = description,
     entryStatus = status
   ) {
-    let initials = selectedUser;
+    // Use the current user's initials if logged in. Replies inherit from the parent when
+    // the current user is not set (this should not happen once login is required).
+    let initials = currentUser ? currentUser.initials : selectedUser;
     if (!initials && parentId) {
       const findById = (list, id) => {
         for (const item of list) {
@@ -213,7 +272,9 @@ function App() {
       const update = (list) =>
         list.map((item) => {
           if (item.id === id) {
-            return { ...item, ...fields, editedAt: new Date().toISOString(), editedBy: selectedUser };
+            // When editing, record the current user as the editor if available, otherwise fall back to selectedUser
+            const editor = currentUser ? currentUser.initials : selectedUser;
+            return { ...item, ...fields, editedAt: new Date().toISOString(), editedBy: editor };
           }
           return { ...item, children: update(item.children) };
         });
@@ -463,33 +524,61 @@ function App() {
     );
   }
 
+  // If no user is logged in, render a simple login form. Existing users can select
+  // their initials from a list; new users must provide both initials and a full name.
+  if (!currentUser) {
+    return (
+      <div style={{ padding: '16px', fontFamily: 'sans-serif' }}>
+        <h1>Daily Mail</h1>
+        <div style={{ marginTop: '16px' }}>
+          <div>
+            <label style={{ marginRight: '4px' }}>Initials:</label>
+            <input
+              value={loginInitials}
+              onChange={(e) => setLoginInitials(e.target.value)}
+              placeholder="Initials"
+              style={{ width: '80px' }}
+            />
+            {/* Show name field only when the initials are not found among existing users */}
+            {!users.some((u) => u.initials === loginInitials.trim()) && (
+              <input
+                value={loginName}
+                onChange={(e) => setLoginName(e.target.value)}
+                placeholder="Full name"
+                style={{ marginLeft: '4px' }}
+              />
+            )}
+            <button onClick={handleLogin} style={{ marginLeft: '4px' }}>
+              Log in
+            </button>
+          </div>
+          {users.length > 0 && (
+            <div style={{ marginTop: '8px', fontSize: '0.9em' }}>
+              <strong>Existing users:</strong>{' '}
+              {users.map((u) => (
+                <span key={u.initials} style={{ marginRight: '8px' }}>
+                  {u.initials}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Render the main app when a user is logged in
   return (
     <div style={{ padding: '16px', fontFamily: 'sans-serif' }}>
       <h1>Daily Mail</h1>
       <div style={{ marginBottom: '16px' }}>
-        <div>
-          <label>User: </label>
-          <select value={selectedUser} onChange={(e) => setSelectedUser(e.target.value)}>
-            <option value="">Select initials</option>
-            {users.map((u) => (
-              <option key={u.initials} value={u.initials}>
-                {u.initials}
-              </option>
-            ))}
-          </select>
-          <input placeholder="New user name" id="newUserName" style={{ marginLeft: '8px' }} />
-          <input placeholder="Initials" id="newUserInitials" style={{ marginLeft: '4px', width: '60px' }} />
-          <button
-            onClick={() => {
-              const name = document.getElementById('newUserName').value;
-              const initials = document.getElementById('newUserInitials').value;
-              addUser(name, initials);
-              document.getElementById('newUserName').value = '';
-              document.getElementById('newUserInitials').value = '';
-            }}
-            style={{ marginLeft: '4px' }}
-          >
-            Add User
+        {/* Show the logged in user and a logout button */}
+        <div style={{ marginBottom: '8px' }}>
+          <span>
+            Logged in as {currentUser.name || currentUser.initials} ({currentUser.initials})
+          </span>
+          <button onClick={handleLogout} style={{ marginLeft: '8px' }}>
+            Logout
           </button>
         </div>
         <div style={{ marginTop: '8px' }}>
