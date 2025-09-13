@@ -53,11 +53,23 @@ function App() {
 
   const handlePaste = (e) => {
     const clipboardData = e.clipboardData;
-    // If the clipboard contains HTML table markup, prefer that to preserve formatting
+    // If the clipboard contains HTML table markup (e.g. copied from Excel), extract and clean it
     const htmlData = clipboardData.getData('text/html');
-    if (htmlData && htmlData.includes('<table')) {
+    if (htmlData && htmlData.toLowerCase().includes('<table')) {
       e.preventDefault();
-      setHtml((prev) => prev + htmlData);
+      // Extract the first <table>...</table> segment
+      const match = htmlData.match(/<table[\s\S]*?<\/table>/i);
+      let tableHtml = match ? match[0] : htmlData;
+      // Remove <col> tags which aren't needed for display
+      tableHtml = tableHtml.replace(/<col[^>]*>/gi, '');
+      // Remove styles or classes on <tr> tags
+      tableHtml = tableHtml.replace(/<tr[^>]*>/gi, '<tr>');
+      // Replace opening <table> tag with a styled version for borders
+      tableHtml = tableHtml.replace(/<table[^>]*>/i, '<table style="border-collapse: collapse;">');
+      // Replace any <td ...> with a styled <td> to show cell borders and padding
+      tableHtml = tableHtml.replace(/<td[^>]*>/gi, '<td style="border: 1px solid #ccc; padding: 4px;">');
+      // Append cleaned table HTML to the existing content
+      setHtml((prev) => prev + tableHtml);
       return;
     }
     // Otherwise, if tab-separated plain text exists, convert it to a table
