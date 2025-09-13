@@ -522,9 +522,87 @@ function App() {
       </div>
       {view === 'threads' ? (
         <div>
-          {entries.map((entry) => (
-            <Entry key={entry.id} entry={entry} />
-          ))}
+          {/* Overview table showing each thread and its latest update */}
+          <div
+            style={{
+              marginTop: '16px',
+              border: '1px solid #ddd',
+              borderRadius: '4px',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '3fr 1fr 2fr',
+                fontWeight: 'bold',
+                backgroundColor: '#f4f4f4',
+                borderBottom: '1px solid #ddd',
+                padding: '8px 4px',
+              }}
+            >
+              <div>Title</div>
+              <div>Status</div>
+              <div>Last update</div>
+            </div>
+            {sortedEntries.map((entry) => {
+              const details = getLastDetails(entry);
+              const entryUser = getUserName(details.lastBy);
+              return (
+                <div
+                  key={'overview-' + entry.id}
+                  onClick={() => goToThread(entry.id)}
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '3fr 1fr 2fr',
+                    padding: '6px 4px',
+                    alignItems: 'center',
+                    cursor: 'pointer',
+                    borderBottom: '1px solid #f0f0f0',
+                    fontSize: '0.9em',
+                  }}
+                >
+                  <div>
+                    <span
+                      style={{
+                        backgroundColor: categoryColors[entry.category] || '#ccc',
+                        color: 'white',
+                        padding: '2px 6px',
+                        borderRadius: '4px',
+                        marginRight: '4px',
+                        fontSize: '0.75em',
+                      }}
+                    >
+                      {entry.category}
+                    </span>
+                    {entry.description ? entry.description : '(untitled)'}
+                  </div>
+                  <div>
+                    <span
+                      style={{
+                        backgroundColor: statusColors[entry.status] || '#ccc',
+                        color: 'white',
+                        padding: '2px 6px',
+                        borderRadius: '4px',
+                        fontSize: '0.75em',
+                      }}
+                    >
+                      {entry.status}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '0.8em', color: '#555' }}>
+                    {new Date(details.latestTime).toLocaleString()} by {entryUser}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {/* Threads list */}
+          <div style={{ marginTop: '16px' }}>
+            {entries.map((entry) => (
+              <Entry key={entry.id} entry={entry} />
+            ))}
+          </div>
         </div>
       ) : (
         <div>
