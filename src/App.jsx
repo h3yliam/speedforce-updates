@@ -1,52 +1,55 @@
 import React, { useState, useEffect, useRef } from 'react';
 
+// Local storage key for persisting entries and users across sessions
 const STORAGE_KEY = 'speedforce_update_thread_app';
 
 function App() {
+  // Entries hold the list of top-level threads and their nested replies
   const [entries, setEntries] = useState([]);
+  // Users and the currently selected user initials
   const [users, setUsers] = useState([]);
   const [selectedUser, setSelectedUser] = useState('');
-  // Category selector (RFQ, PO, ETA, CLAIM) and description for each update
+  // Form fields for new updates
   const [category, setCategory] = useState('RFQ');
   const [description, setDescription] = useState('');
-  const [html, setHtml] = useState('');
   const [status, setStatus] = useState('New');
+  const [html, setHtml] = useState('');
+  // Which view to show: 'threads' for the threaded view, 'all' for the summary
   const [view, setView] = useState('threads');
-  // Ref for the contentEditable message input. Allows WYSIWYG table preview.
+  // If set, the threads view will scroll the entry with this id into view
+  const [scrollToEntryId, setScrollToEntryId] = useState(null);
+  // Ref to the message input div for new updates
   const messageRef = useRef(null);
 
-  // When navigating from the summary list, store the ID to scroll to.
-  // Once the threads view is rendered, an effect will scroll to this entry.
-  const [scrollToEntryId, setScrollToEntryId] = useState(null);
-
+  // On mount, load saved entries and users from localStorage
   useEffect(() => {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
     setEntries(saved.entries || []);
     setUsers(saved.users || []);
   }, []);
 
-  // If the view is switched to 'threads' and we have a pending scroll target,
-  // scroll the corresponding entry into view. Afterwards clear the target so
-  // subsequent renders don't scroll unexpectedly.
+  // Persist entries and users to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ entries, users }));
+  }, [entries, users]);
+
+  // If we switch to the threads view and have a pending scroll target, scroll into view
   useEffect(() => {
     if (view === 'threads' && scrollToEntryId) {
       const el = document.getElementById(`entry-${scrollToEntryId}`);
       if (el) {
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
-      // Clear after attempting to scroll
       setScrollToEntryId(null);
     }
   }, [view, scrollToEntryId]);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ entries, users }));
-  }, [entries, users]);
-
+  // Escape HTML to prevent injection when converting plain text to HTML
   function escapeHtml(str) {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
+  // Convert tab-separated text into an HTML table
   function tsvToHtml(text) {
     if (!/\t/.test(text)) {
       return text
@@ -60,23 +63,18 @@ function App() {
       .map((row) => {
         const cols = row.split('\t');
         const cells = cols
-          .map((col) =>
-            `<td style="border: 1px solid #ccc; padding: 4px;">${escapeHtml(col)}</td>`
-          )
+          .map((col) => `<td style="border: 1px solid #ccc; padding: 4px;">${escapeHtml(col)}</td>`)
           .join('');
         return '<tr>' + cells + '</tr>';
       })
       .join('');
-    // Add basic styling to mimic spreadsheet cell borders
     return `<table style="border-collapse: collapse;">${tableRows}</table>`;
   }
 
+  // Handle paste events on the main message input. Supports pasting HTML tables and TSV
   const handlePaste = (e) => {
     const clipboardData = e.clipboardData;
-    // Grab HTML and plain text from the clipboard. Excel and Google Sheets often put rich
-    // HTML with <html>, <head>, and <body> tags on the clipboard.
     const htmlData = clipboardData.getData('text/html');
-    // If HTML contains a table, parse and sanitize it
     if (htmlData && /<table/i.test(htmlData)) {
       e.preventDefault();
       let tableHtml;
@@ -104,7 +102,6 @@ function App() {
       }
       return;
     }
-    // Otherwise, if tab-separated plain text exists, convert it to a table
     const plain = clipboardData.getData('text/plain');
     if (plain && /\t/.test(plain)) {
       e.preventDefault();
@@ -118,6 +115,7 @@ function App() {
     }
   };
 
+  // Add a new user to the dropdown
   function addUser(name, initials) {
     if (!initials) return;
     if (users.some((u) => u.initials === initials)) return;
@@ -125,72 +123,66 @@ function App() {
     setSelectedUser(initials);
   }
 
-       function addEntry(
-         parentId = null,
-         entryHtml = html,
-         entryCategory = category,
-         entryDescription = description,
-         entryStatus = status
-       ) {
-         // Determine which user's initials to apply to this entry. Use the
-         // currently selected user if present. Otherwise, for replies,
-         // inherit the initials from the parent entry so that a user can
-         // quickly reply without manually re-selecting their initials.
-         let initials = selectedUser;
-         if (!initials && parentId) {
-           // Search the entries tree for the parent entry to get its initials
-           const findById = (list, id) => {
-             for (const item of list) {
-               if (item.id === id) return item;
-               const found = findById(item.children, id);
-               if (found) return found;
-             }
-             return null;
-           };
-           const parentEntry = findById(entries, parentId);
-           if (parentEntry) {
-             initials = parentEntry.initials;
-           }
-         }
-         // Do not create an entry if we still have no initials or no content
-         if (!initials || !entryHtml.trim()) return;
-         const newEntry = {
-           id: Date.now().toString(),
-           parentId,
-           initials,
-           category: entryCategory,
-           description: entryDescription,
-           html: entryHtml,
-           status: entryStatus,
-           createdAt: new Date().toISOString(),
-           editedAt: null,
-           editedBy: null,
-           children: [],
-         };
-         setEntries((prev) => {
-           if (!parentId) {
-             return [...prev, newEntry];
-           }
-           const addToParent = (list) =>
-             list.map((item) => {
-               if (item.id === parentId) {
-                 return { ...item, children: [...item.children, newEntry] };
-               }
-               return { ...item, children: addToParent(item.children) };
-             });
-           return addToParent(prev);
-         });
-         setHtml('');
-         // Reset category and description after saving
-         setCategory('RFQ');
-         setDescription('');
-         setStatus('New');
-         // Clear content of the editable div so the user sees an empty message area
-         if (messageRef.current) {
-           messageRef.current.innerHTML = '';
-         }
-       }
+  // Add a new entry or reply. Replies inherit the parent entry's category, description and status
+  function addEntry(
+    parentId = null,
+    entryHtml = html,
+    entryCategory = category,
+    entryDescription = description,
+    entryStatus = status
+  ) {
+    let initials = selectedUser;
+    if (!initials && parentId) {
+      const findById = (list, id) => {
+        for (const item of list) {
+          if (item.id === id) return item;
+          const found = findById(item.children, id);
+          if (found) return found;
+        }
+        return null;
+      };
+      const parentEntry = findById(entries, parentId);
+      if (parentEntry) {
+        initials = parentEntry.initials;
+      }
+    }
+    if (!initials || !entryHtml.trim()) return;
+    const newEntry = {
+      id: Date.now().toString(),
+      parentId,
+      initials,
+      category: entryCategory,
+      description: entryDescription,
+      html: entryHtml,
+      status: entryStatus,
+      createdAt: new Date().toISOString(),
+      editedAt: null,
+      editedBy: null,
+      children: [],
+    };
+    setEntries((prev) => {
+      if (!parentId) {
+        return [...prev, newEntry];
+      }
+      const addToParent = (list) =>
+        list.map((item) => {
+          if (item.id === parentId) {
+            return { ...item, children: [...item.children, newEntry] };
+          }
+          return { ...item, children: addToParent(item.children) };
+        });
+      return addToParent(prev);
+    });
+    setHtml('');
+    setCategory('RFQ');
+    setDescription('');
+    setStatus('New');
+    if (messageRef.current) {
+      messageRef.current.innerHTML = '';
+    }
+  }
 
+  // Update an existing entry with new fields (html and/or status)
   function updateEntry(id, fields) {
     setEntries((prev) => {
       const update = (list) =>
@@ -204,6 +196,7 @@ function App() {
     });
   }
 
+  // Find the latest update timestamp and user for a thread
   function getLastInfo(entry) {
     let latest = entry.editedAt || entry.createdAt;
     let lastBy = entry.editedAt ? (entry.editedBy || entry.initials) : entry.initials;
@@ -217,14 +210,11 @@ function App() {
     return { latest, lastBy };
   }
 
-  // Recursively walk an entry and its children to find the details of the
-  // latest update, including the HTML content and who made the update.
+  // Find the latest update details (timestamp, user and html) for a thread
   function getLastDetails(entry) {
-    // Start with this entry's own fields
     let latestTime = entry.editedAt || entry.createdAt;
     let lastBy = entry.editedAt ? (entry.editedBy || entry.initials) : entry.initials;
     let lastHtml = entry.html;
-    // Recursively inspect children for more recent updates
     entry.children.forEach((child) => {
       const info = getLastDetails(child);
       if (new Date(info.latestTime) > new Date(latestTime)) {
@@ -236,32 +226,32 @@ function App() {
     return { latestTime, lastBy, lastHtml };
   }
 
-  // Navigate to the threads view and scroll to a specific entry by ID.
+  // Navigate back to threads view and scroll to a specific entry id
   function goToThread(id) {
-    // Switch view first; scrolling will be handled by useEffect when view is 'threads'
     setView('threads');
     setScrollToEntryId(id);
   }
 
+  // Sort threads by their latest activity
   const sortedEntries = [...entries].sort((a, b) => {
     const al = getLastInfo(a).latest;
     const bl = getLastInfo(b).latest;
     return bl.localeCompare(al);
   });
 
+  // Component to render a single entry and its replies
   function Entry({ entry, depth = 0 }) {
     const [editing, setEditing] = useState(false);
-    // Title editing is removed; entries have immutable category/description
     const [editHtml, setEditHtml] = useState(entry.html);
     const [editStatus, setEditStatus] = useState(entry.status);
     const [replying, setReplying] = useState(false);
     const [replyHtml, setReplyHtml] = useState('');
-    // Refs for edit and reply inputs to support contentEditable with paste handling
+    // For top-level entries, collapsed by default; nested entries always expanded
+    const [showHistory, setShowHistory] = useState(depth !== 0);
     const editRef = useRef(null);
     const replyRef = useRef(null);
-    // Generic paste handler for edit and reply inputs. It sanitizes HTML tables
-    // copied from Excel and inserts them with visible borders, or converts
-    // TSV data into an HTML table.
+
+    // Handle paste for edit and reply contentEditable fields
     const handleGenericPaste = (e, ref, setValue) => {
       const clipboardData = e.clipboardData;
       const htmlData = clipboardData.getData('text/html');
@@ -305,28 +295,49 @@ function App() {
       }
     };
 
+    // Save edits to an entry
     function handleEditSave() {
-      // Only update the HTML and status. Category/description remain unchanged.
-      // Read the latest HTML from the editable div in case the state hasn't caught up yet
       const latestHtml = editRef.current ? editRef.current.innerHTML : editHtml;
       updateEntry(entry.id, { html: latestHtml, status: editStatus });
       setEditing(false);
     }
 
+    // Save a reply to this entry
     function handleReplySave() {
-      // Replies inherit the category, description and status of the parent entry
-      // Grab latest HTML from the reply contentEditable to avoid stale state when saving
       const latestReply = replyRef.current ? replyRef.current.innerHTML : replyHtml;
       addEntry(entry.id, latestReply, entry.category, entry.description, entry.status);
       setReplying(false);
       setReplyHtml('');
     }
 
+    // Collapsed view for top-level entries shows only the latest update
+    if (!showHistory && depth === 0) {
+      const details = getLastDetails(entry);
+      return (
+        <div id={`entry-${entry.id}`} style={{ border: '1px solid #ddd', padding: '8px', marginTop: '8px', marginLeft: depth ? depth * 20 + 'px' : '0' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontWeight: 'bold' }}>
+              {entry.category}
+              {entry.description ? ' - ' + entry.description : ''}
+            </div>
+            <div>
+              <span style={{ borderRadius: '4px', padding: '2px 6px', border: '1px solid #ccc', fontSize: '0.75em' }}>{entry.status}</span>
+            </div>
+          </div>
+          <div style={{ fontSize: '0.8em', color: '#666' }}>
+            {details.lastBy} - {new Date(details.latestTime).toLocaleString()}
+          </div>
+          <div dangerouslySetInnerHTML={{ __html: details.lastHtml }} />
+          <button onClick={() => setShowHistory(true)} style={{ marginTop: '4px' }}>
+            Show past updates
+          </button>
+        </div>
+      );
+    }
+
+    // Expanded view shows the full entry and its history
     return (
-      <div
-        id={`entry-${entry.id}`}
-        style={{ border: '1px solid #ddd', padding: '8px', marginTop: '8px', marginLeft: depth ? depth * 20 + 'px' : '0' }}
-      >
+      <div id={`entry-${entry.id}`} style={{ border: '1px solid #ddd', padding: '8px', marginTop: '8px', marginLeft: depth ? depth * 20 + 'px' : '0' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontWeight: 'bold' }}>
             {entry.category}
@@ -334,6 +345,11 @@ function App() {
           </div>
           <div>
             <span style={{ borderRadius: '4px', padding: '2px 6px', border: '1px solid #ccc', marginLeft: '8px', fontSize: '0.75em' }}>{entry.status}</span>
+            {depth === 0 && (
+              <button onClick={() => setShowHistory(false)} style={{ marginLeft: '8px' }}>
+                Hide past updates
+              </button>
+            )}
           </div>
         </div>
         <div style={{ fontSize: '0.8em', color: '#666' }}>
@@ -348,7 +364,6 @@ function App() {
           <div dangerouslySetInnerHTML={{ __html: entry.html }} />
         ) : (
           <div>
-            {/* Display category and description read-only while editing */}
             <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>
               {entry.category}
               {entry.description ? ' - ' + entry.description : ''}
@@ -452,7 +467,6 @@ function App() {
             Add User
           </button>
         </div>
-        {/* Category dropdown and description replace the old title field */}
         <div style={{ marginTop: '8px' }}>
           <label style={{ marginRight: '4px' }}>Category:</label>
           <select value={category} onChange={(e) => setCategory(e.target.value)}>
