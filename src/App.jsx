@@ -242,13 +242,17 @@ function App() {
 
     function handleEditSave() {
       // Only update the HTML and status. Category/description remain unchanged.
-      updateEntry(entry.id, { html: editHtml, status: editStatus });
+      // Read the latest HTML from the editable div in case the state hasn't caught up yet
+      const latestHtml = editRef.current ? editRef.current.innerHTML : editHtml;
+      updateEntry(entry.id, { html: latestHtml, status: editStatus });
       setEditing(false);
     }
 
     function handleReplySave() {
       // Replies inherit the category, description and status of the parent entry
-      addEntry(entry.id, replyHtml, entry.category, entry.description, entry.status);
+      // Grab latest HTML from the reply contentEditable to avoid stale state when saving
+      const latestReply = replyRef.current ? replyRef.current.innerHTML : replyHtml;
+      addEntry(entry.id, latestReply, entry.category, entry.description, entry.status);
       setReplying(false);
       setReplyHtml('');
     }
