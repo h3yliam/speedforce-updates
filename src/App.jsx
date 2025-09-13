@@ -15,11 +15,29 @@ function App() {
   // Ref for the contentEditable message input. Allows WYSIWYG table preview.
   const messageRef = useRef(null);
 
+  // When navigating from the summary list, store the ID to scroll to.
+  // Once the threads view is rendered, an effect will scroll to this entry.
+  const [scrollToEntryId, setScrollToEntryId] = useState(null);
+
   useEffect(() => {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
     setEntries(saved.entries || []);
     setUsers(saved.users || []);
   }, []);
+
+  // If the view is switched to 'threads' and we have a pending scroll target,
+  // scroll the corresponding entry into view. Afterwards clear the target so
+  // subsequent renders don't scroll unexpectedly.
+  useEffect(() => {
+    if (view === 'threads' && scrollToEntryId) {
+      const el = document.getElementById(`entry-${scrollToEntryId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      // Clear after attempting to scroll
+      setScrollToEntryId(null);
+    }
+  }, [view, scrollToEntryId]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ entries, users }));
@@ -199,6 +217,32 @@ function App() {
     return { latest, lastBy };
   }
 
+  // Recursively walk an entry and its children to find the details of the
+  // latest update, including the HTML content and who made the update.
+  function getLastDetails(entry) {
+    // Start with this entry's own fields
+    let latestTime = entry.editedAt || entry.createdAt;
+    let lastBy = entry.editedAt ? (entry.editedBy || entry.initials) : entry.initials;
+    let lastHtml = entry.html;
+    // Recursively inspect children for more recent updates
+    entry.children.forEach((child) => {
+      const info = getLastDetails(child);
+      if (new Date(info.latestTime) > new Date(latestTime)) {
+        latestTime = info.latestTime;
+        lastBy = info.lastBy;
+        lastHtml = info.lastHtml;
+      }
+    });
+    return { latestTime, lastBy, lastHtml };
+  }
+
+  // Navigate to the threads view and scroll to a specific entry by ID.
+  function goToThread(id) {
+    // Switch view first; scrolling will be handled by useEffect when view is 'threads'
+    setView('threads');
+    setScrollToEntryId(id);
+  }
+
   const sortedEntries = [...entries].sort((a, b) => {
     const al = getLastInfo(a).latest;
     const bl = getLastInfo(b).latest;
@@ -279,7 +323,10 @@ function App() {
     }
 
     return (
-      <div style={{ border: '1px solid #ddd', padding: '8px', marginTop: '8px', marginLeft: depth ? depth * 20 + 'px' : '0' }}>
+      <div
+        id={`entry-${entry.id}`}
+        style={{ border: '1px solid #ddd', padding: '8px', marginTop: '8px', marginLeft: depth ? depth * 20 + 'px' : '0' }}
+      >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontWeight: 'bold' }}>
             {entry.category}
@@ -467,23 +514,52 @@ function App() {
         </div>
       ) : (
         <div>
-          {/* Summary list for all updates */}
+          {/* Summary list for all threads. Each card shows the latest update's content, timestamp, and author. Clicking navigates to the thread. */}
           {sortedEntries.map((entry) => {
-            const info = getLastInfo(entry);
+            const details = getLastDetails(entry);
             return (
-              <div key={entry.id} style={{ border: '1px solid #ddd', padding: '8px', marginTop: '8px' }}>
+              <div
+                key={entry.id}
+                onClick={() => goToThread(entry.id)}
+                style={{
+                  border: '1px solid #ddd',
+                  padding: '8px',
+                  marginTop: '8px',
+                  cursor: 'pointer',
+                  backgroundColor: '#f9f9f9',
+                }}
+              >
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ fontWeight: 'bold' }}>
                     {entry.category}
                     {entry.description ? ' - ' + entry.description : ''}
                   </span>
-                  <span style={{ borderRadius: '4px', padding: '2px 6px', border: '1px solid #ccc', fontSize: '0.75em' }}>
+                  <span
+                    style={{
+                      borderRadius: '4px',
+                      padding: '2px 6px',
+                      border: '1px solid #ccc',
+                      fontSize: '0.75em',
+                    }}
+                  >
                     {entry.status}
                   </span>
                 </div>
-                <div style={{ fontSize: '0.8em', color: '#666' }}>
-                  Latest: {new Date(info.latest).toLocaleString()} by {info.lastBy}
+                <div style={{ fontSize: '0.8em', color: '#666', marginTop: '2px' }}>
+                  Latest: {new Date(details.latestTime).toLocaleString()} by {details.lastBy}
                 </div>
+                {/* Show a small preview of the latest update content. Use dangerouslySetInnerHTML to render HTML tables. */}
+                <div
+                  dangerouslySetInnerHTML={{ __html: details.lastHtml }}
+                  style={{
+                    marginTop: '4px',
+                    fontSize: '0.85em',
+                    maxHeight: '120px',
+                    overflow: 'hidden',
+                    borderTop: '1px solid #eee',
+                    paddingTop: '4px',
+                  }}
+                ></div>
               </div>
             );
           })}
