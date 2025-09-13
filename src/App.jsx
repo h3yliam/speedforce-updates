@@ -274,7 +274,7 @@ function App() {
 
   return (
     <div style={{ padding: '16px', fontFamily: 'sans-serif' }}>
-      <h1>Speedforce Updates</h1>
+      <h1>Daily Mail</h1>
       <div style={{ marginBottom: '16px' }}>
         <div>
           <label>User: </label>
