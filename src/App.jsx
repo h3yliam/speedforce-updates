@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 const STORAGE_KEY = 'speedforce_update_thread_app';
 
@@ -12,6 +12,8 @@ function App() {
   const [html, setHtml] = useState('');
   const [status, setStatus] = useState('New');
   const [view, setView] = useState('threads');
+  // Ref for the contentEditable message input. Allows WYSIWYG table preview.
+  const messageRef = useRef(null);
 
   useEffect(() => {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
@@ -68,8 +70,16 @@ function App() {
       tableHtml = tableHtml.replace(/<table[^>]*>/i, '<table style="border-collapse: collapse;">');
       // Replace any <td ...> with a styled <td> to show cell borders and padding
       tableHtml = tableHtml.replace(/<td[^>]*>/gi, '<td style="border: 1px solid #ccc; padding: 4px;">');
-      // Append cleaned table HTML to the existing content
-      setHtml((prev) => prev + tableHtml);
+      // Insert the sanitized table into the editable div at the cursor position
+      if (messageRef.current) {
+        // Use execCommand to insert HTML at the caret
+        document.execCommand('insertHTML', false, tableHtml);
+        // Update html state from the editable div
+        setHtml(messageRef.current.innerHTML);
+      } else {
+        // Fallback: append to html state
+        setHtml((prev) => prev + tableHtml);
+      }
       return;
     }
     // Otherwise, if tab-separated plain text exists, convert it to a table
@@ -77,7 +87,12 @@ function App() {
     if (plain && /\t/.test(plain)) {
       e.preventDefault();
       const tableHtml = tsvToHtml(plain);
-      setHtml((prev) => prev + tableHtml);
+      if (messageRef.current) {
+        document.execCommand('insertHTML', false, tableHtml);
+        setHtml(messageRef.current.innerHTML);
+      } else {
+        setHtml((prev) => prev + tableHtml);
+      }
     }
   };
 
@@ -127,6 +142,10 @@ function App() {
     setCategory('RFQ');
     setDescription('');
     setStatus('New');
+    // Clear content of the editable div so the user sees an empty message area
+    if (messageRef.current) {
+      messageRef.current.innerHTML = '';
+    }
   }
 
   function updateEntry(id, fields) {
@@ -306,13 +325,26 @@ function App() {
             </option>
           ))}
         </select>
-        <textarea
-          value={html}
-          onChange={(e) => setHtml(e.target.value)}
+        <div
+          ref={messageRef}
+          contentEditable
           onPaste={handlePaste}
-          style={{ width: '100%', height: '100px', marginTop: '4px' }}
-          placeholder="Enter your message. Paste Excel/TSV tables here."
-        />
+          onInput={() => {
+            if (messageRef.current) {
+              setHtml(messageRef.current.innerHTML);
+            }
+          }}
+          style={{
+            width: '100%',
+            height: '100px',
+            marginTop: '4px',
+            padding: '4px',
+            border: '1px solid #ccc',
+            overflowY: 'auto',
+            whiteSpace: 'pre-wrap',
+          }}
+          data-placeholder="Enter your message. Paste Excel/TSV tables here."
+        ></div>
         <button onClick={() => addEntry()} style={{ marginTop: '4px' }}>
           Save
         </button>
